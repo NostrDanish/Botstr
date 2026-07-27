@@ -481,6 +481,8 @@ A deletion is an edition setting the terminal flag:
 
 Owner-signed, chainless, exempt from version discipline — published at `dissolved_pk`, not the Control Plane address. Presence of one valid owner-signed edition *is* the state.
 
+The `eid` is the `community_id`, and a verifier MUST check it: `dissolved_pk` derives from that id with no secret, so the plane is public to read and to sign at, and a payload naming no Community would let an owner's tombstone for one be re-wrapped to kill another (CORD-02 §9).
+
 ```jsonc
 {
   "kind": 3308,
@@ -488,7 +490,7 @@ Owner-signed, chainless, exempt from version discipline — published at `dissol
   "content": "",
   "tags": [
     ["vsk", "10"],
-    ["eid", "0000000000000000000000000000000000000000000000000000000000000000"]
+    ["eid", "<community_id>"]   // binds the tombstone to the Community it kills
     // chainless: no ev, no ep, no vac
   ],
   "created_at": 1725000000
