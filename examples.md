@@ -500,6 +500,32 @@ A deletion is an edition setting the terminal flag:
 ["<link_signer pubkey hex>", "<link_signer pubkey hex>"]
 ```
 
+### vsk 11 — Pin List (CORD-04 §7)
+
+`eid` = `pins_locator(community_id, channel_id)` (CORD-02 A.6). One list per Channel, replaced entire on every edit; signer must hold `PIN_MESSAGES`. Each entry carries the pinned message's original seal verbatim plus its one-shot NIP-44 message keys, so any reader able to open the list's form — including one holding no historical keys — verifies author, words, and time from the pin alone.
+
+```jsonc
+// Public Channel: plaintext — the plane's wrap is the gate, and compaction
+// re-wrapping it to each new root keeps it readable forever.
+{ "entries": [
+    { "seal": { /* the original kind-20013 seal event, byte-verbatim */ },
+      "keys": "<76 bytes hex: chacha_key[32] || chacha_nonce[12] || hmac_key[32]>",
+      "wrap": "<hex event id>",    // optional: jump-to-context locator
+      "edit": {                    // optional: the author's own Edit (kind 3302),
+        "seal": { /* … */ },       // proven the same way, so a keyless reader
+        "keys": "<76 bytes hex>"   // never reads superseded words as current
+      } }
+] }
+```
+
+```jsonc
+// Private Channel: the same list, NIP-44-sealed under the Channel's group key
+// at the named epoch (self-ECDH conversation key, CORD-01).
+{ "epoch": "4", "sealed": nip44_encrypt(channel_conv_key, { "entries": [ … ] }) }
+```
+
+Caps: 25 entries and 32,768 bytes of `content`, judged on the carried bytes — a violating edition still folds and chains, but reads as an empty list (CORD-04 §7). An entry failing verification (seal kind, signature, MAC, decryption, unpad/parse, rumor kind, author equality, or the rumor's `channel` tag not matching this list's Channel) is dropped alone; an `edit` bundle failing the same checks — with kind `3302`, and additionally the Edit's author matching the original's and its `e` tag naming the original — costs only the revision, never the pin. A member's deletion of their own message kills its pin.
+
 ### vsk 10 — Dissolved tombstone (CORD-02 §9)
 
 Owner-signed, chainless, exempt from version discipline — published at `dissolved_pk`, not the Control Plane address. Presence of one valid owner-signed edition *is* the state.
