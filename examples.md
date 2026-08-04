@@ -26,6 +26,7 @@ Conventions used throughout:
 | 3310 | WebXDC peer signal | [§2.6](#26-kind-3310--webxdc-peer-signal) |
 | 23311 | Typing indicator (ephemeral) | [§2.7](#27-kind-23311--typing-indicator) |
 | 23313 | Voice presence (ephemeral) | [§2.8](#28-kind-23313--voice-presence) |
+| 1740 | Timer notice | [§2.9](#29-kind-1740--timer-notice) |
 | 3306 | Join / Leave | [§3.1](#31-kind-3306--join--leave) |
 | 3309 | Kick | [§3.2](#32-kind-3309--kick) |
 | 3312 | Guestbook snapshot | [§3.3](#33-kind-3312--guestbook-snapshot) |
@@ -123,6 +124,8 @@ Identical structure to `1059`, but relays MUST NOT store it: broadcast to live s
 ## 2. Chat Plane rumors
 
 All Chat rumors ride an encrypted seal (§1.1) at the Channel's address, and MUST commit `["channel", <channel_id>]` and `["epoch", <n>]` inside the author-signed rumor; a receiver checks both against the key that opened the wrap and drops a mismatch (CORD-03 §3).
+
+When the Community's disappearing-messages timer is set (CORD-08), every durable Chat rumor **and its outer wrap** also carry NIP-40 `["expiration", "<created_at + timer>"]` — except deletes (§2.4) and timer notices (§2.9), which never expire. The examples below omit the tag.
 
 ### 2.1 Kind 9 — Message
 
@@ -318,6 +321,25 @@ Ephemeral like the typing indicator (`21059` wrap, §1.3): call heartbeats are r
 }
 ```
 
+### 2.9 Kind 1740 — Timer notice
+
+Posted by staff after changing the Community's disappearing-messages timer (CORD-08 §4), one per Channel whose key they hold — the same kind and `timer` tag NIP-17 disappearing-DM clients use. Rendered as an inline notice row; displayed only if the author holds `MANAGE_METADATA` in the fold. Never carries an `expiration` tag itself.
+
+```jsonc
+{
+  "kind": 1740,
+  "pubkey": "<staff member>",
+  "content": "",
+  "tags": [
+    ["channel", "<channel_id>"],
+    ["epoch", "0"],
+    ["ms", "233"],
+    ["timer", "2592000"]                          // the new timer in seconds; "0" = turned off
+  ],
+  "created_at": 1686845000
+}
+```
+
 ## 3. Guestbook Plane rumors
 
 Encrypted seals (§1.1) at `guestbook_pk` (CORD-02 §5). The Guestbook coalesces flat — one final state per npub, latest wins by millisecond time, ties broken by the lower rumor id.
@@ -419,6 +441,7 @@ Per-`vsk` `content` payloads:
   "relays": ["wss://jskitty.com/nostr", "wss://asia.vectorapp.io/nostr"],
   "icon":   { "url": "https://blossom.example/…", "key": "<hex>", "nonce": "<hex>", "hash": "<sha256 hex>" },
   "banner": { "url": "https://blossom.example/…", "key": "<hex>", "nonce": "<hex>", "hash": "<sha256 hex>" },
+  "message_expiration": 2592000,
   "custom": { "rules": "Be excellent to each other." }
 }
 ```
