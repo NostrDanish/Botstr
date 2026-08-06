@@ -670,7 +670,7 @@ The encrypted list's plaintext:
 }
 ```
 
-Join material is the bundle's membership subset: `community_id, owner, owner_salt, community_root, root_epoch, control_pk, channels, relays, name` — never the icon, never the link fields.
+Join material is the bundle's membership subset: `community_id, owner, owner_salt, community_root, root_epoch, control_pk, channels, relays, name`, plus `control_root` when held (CORD-02 §2) — never the icon, never the link fields.
 
 ### 6.3 Kind 13303 — Invite List (CORD-05 §4)
 
