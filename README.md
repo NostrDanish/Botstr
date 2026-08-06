@@ -33,7 +33,7 @@ Concord is defined by a series of **CORD** documents. Like Nostr's NIPs, each is
 | CORD | Title | What it does |
 |---|---|---|
 | [01](01.md) | Private Streams | The base primitive: a shared-key stream of NIP-59 giftwraps, readable by anyone holding the key, invisible to everyone else. |
-| [02](02.md) | Communities | Ties channels into one membership and authority model. Defines the self-certifying `community_id`, the `community_root` access key, epochs, and the Control/Chat/Guestbook planes. |
+| [02](02.md) | Communities | Ties channels into one membership and authority model. Defines the self-certifying `community_id`, the `community_root` access key, the staff-held `control_root` write key, epochs, and the Control/Chat/Guestbook planes. |
 | [03](03.md) | Channels | Public and Private rooms, each its own sealed plane with its own key derived from the community. |
 | [04](04.md) | Roles | Granular, ranked, owner-rooted permissions (Admin, Mod, custom) — validated by every client, enforced by rejection, not by a server. |
 | [05](05.md) | Invites | Shareable links whose keys live in an encrypted bundle on relays; the link carries only a locator and an unlock token, so invites revoke without re-keying. Or skip the URL: giftwrap the keys straight to an npub as a Direct Invite. |
