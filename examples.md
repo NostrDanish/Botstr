@@ -90,8 +90,8 @@ The Control Plane **only** (CORD-02 §5). Same wrap, but the seal's `content` ho
 ```jsonc
 {
   "kind": 1059,
-  "pubkey": "<control_pk>",
-  "content": nip44_encrypt(conv_key, {
+  "pubkey": "<control_pk>",                       // the control_root-derived signer: only staff can mint this wrap (CORD-02 §5)
+  "content": nip44_encrypt(control_conv_key, {    // the community_root-derived read key: every member decrypts (CORD-02 §5)
     "id": "<seal id>",
     "kind": 20014,                                // plaintext seal
     "pubkey": "<actor's real pubkey>",
@@ -102,7 +102,7 @@ The Control Plane **only** (CORD-02 §5). Same wrap, but the seal's `content` ho
   }),
   "tags": [ ["p", "<random ephemeral pubkey>"] ],
   "created_at": 1686840217,
-  "sig": "<control stream signature>"
+  "sig": "<control signer signature>"
 }
 ```
 
@@ -408,7 +408,7 @@ Refounder-signed, seeding the new epoch's Guestbook after a Refounding (CORD-02 
 
 ## 4. Control Plane — kind 3308 editions
 
-Every authority action is a kind `3308` **edition** rumor inside a **plaintext seal** (§1.2) at `control_pk`. The tags carry the edition machinery (CORD-04 §1); the `content` is the entity's new state as JSON, its structure selected by `vsk`.
+Every authority action is a kind `3308` **edition** rumor inside a **plaintext seal** (§1.2) at `control_pk` — the staff-held signer's address (CORD-02 §5): every member subscribes, verifies, and reads it, but only a `control_root` holder can publish to it. The tags carry the edition machinery (CORD-04 §1); the `content` is the entity's new state as JSON, its structure selected by `vsk`.
 
 The common frame:
 
@@ -478,10 +478,14 @@ A deletion is an edition setting the terminal flag:
 
 ### vsk 3 — Grant (CORD-04 §2)
 
-`eid` = `grant_locator(community_id, member)` (CORD-02 A.6). Honored only if the signer outranks every Role handed out; empty `role_ids` is a revoke.
+`eid` = `grant_locator(community_id, member)` (CORD-02 A.6). Honored only if the signer outranks every Role handed out; empty `role_ids` is a revoke. A staff-making Grant also delivers the Control Plane write secret in `control_wrap` (CORD-04 §3): NIP-44 ciphertext under the granter↔member pairwise key, its plaintext the fixed-width 40 bytes `epoch_be[8] ‖ control_root[32]`, adopted only if the secret derives to the recipient's held `control_pk` at that epoch. Every other reader treats it as opaque bytes.
 
 ```jsonc
-{ "member": "<member pubkey>", "role_ids": ["<role_id hex>", "<role_id hex>"] }
+{
+  "member": "<member pubkey>",
+  "role_ids": ["<role_id hex>", "<role_id hex>"],
+  "control_wrap": "<base64>"                      // optional: staff write key delivery (CORD-04 §3)
+}
 ```
 
 ### vsk 4 — Banlist (CORD-04 §4)
@@ -568,7 +572,7 @@ Delivered at a **rekey address** derived from the *prior* secret (CORD-06 §2), 
 }
 ```
 
-Each `wrapped` plaintext is exactly 72 bytes — `scope_id[32] ‖ epoch_be[8] ‖ new_key[32]` — NIP-44-encrypted under the Rotator↔recipient pairwise key; the recipient finds their blob by computing their `locator` (CORD-06 §2) and verifies the inner scope and epoch against the tags before accepting the key.
+Each `wrapped` plaintext is fixed-width per form (CORD-06 §1): a Channel rotation's is 72 bytes — `scope_id[32] ‖ epoch_be[8] ‖ new_key[32]` — while a base rotation's appends the next epoch's Control Plane keys, 104 bytes for a member (`… ‖ new_control_pk[32]`) and 136 for a staff recipient (`… ‖ new_control_root[32]`). All are NIP-44-encrypted under the Rotator↔recipient pairwise key; the recipient finds their blob by computing their `locator` (CORD-06 §2) and verifies the inner scope and epoch against the tags before accepting the key — a staff recipient also that the delivered secret derives to the delivered pubkey. A 72-byte *base* blob marks a legacy, pre-split rotation (CORD-06 §3): honored when reading old epochs — its acceptor folds that epoch's Control at the legacy address — never minted by a compliant Rotator.
 
 ## 6. Outside the wrap
 
@@ -604,6 +608,7 @@ The encrypted bundle's plaintext (CORD-05 §1):
   "owner_salt": "<hex>",                          // verify: community_id == sha256("concord/community" || owner || salt)
   "community_root": "<hex>",
   "root_epoch": 0,
+  "control_pk": "<hex>",                          // the Control Plane signer's pubkey at that epoch (CORD-02 §5)
   "channels": [
     { "id": "<channel_id>", "key": "<hex>", "epoch": 1, "name": "testers" }
   ],
@@ -665,7 +670,7 @@ The encrypted list's plaintext:
 }
 ```
 
-Join material is the bundle's membership subset: `community_id, owner, owner_salt, community_root, root_epoch, channels, relays, name` — never the icon, never the link fields.
+Join material is the bundle's membership subset: `community_id, owner, owner_salt, community_root, root_epoch, control_pk, channels, relays, name`, plus `control_root` when held (CORD-02 §2) — never the icon, never the link fields.
 
 ### 6.3 Kind 13303 — Invite List (CORD-05 §4)
 
