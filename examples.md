@@ -33,7 +33,7 @@ Conventions used throughout:
 | 3308 | Control edition (per `vsk`) | [§4](#4-control-plane--kind-3308-editions) |
 | 3303 | Rekey blobs | [§5](#5-rekeys--kind-3303) |
 | 33301 | Public invite bundle | [§6.1](#61-kind-33301--public-invite-bundle) |
-| 13302 | Community List | [§6.2](#62-kind-13302--community-list) |
+| 33302 | Community List | [§6.2](#62-kind-33302--community-list) |
 | 13303 | Invite List | [§6.3](#63-kind-13303--invite-list) |
 | 3313 | Direct invite (standard NIP-59 wrap) | [§7](#7-kind-3313--direct-invite) |
 
@@ -637,40 +637,55 @@ Revoking the link re-posts the same coordinate as a tombstone:
 }
 ```
 
-### 6.2 Kind 13302 — Community List (CORD-02 §8)
+### 6.2 Kind 33302 — Community List (CORD-02 §8)
 
-Replaceable, one per user, signed by their real key, NIP-44-encrypted to self. A client convenience, never Community state.
+Addressable, one event per fragment, signed by their real key, NIP-44-encrypted to self. A client convenience, never Community state. The `d` tag is the fragment index in decimal; this is fragment `1` of a two-fragment List.
 
 ```jsonc
 {
-  "kind": 13302,
+  "kind": 33302,
   "pubkey": "<member's real pubkey>",
-  "content": "<nip44_encrypt(self, list)>",
-  "tags": [],
+  "content": "<nip44_encrypt(self, fragment)>",
+  "tags": [["d", "1"]],
   "created_at": 1722400000,
   "sig": "<member's real signature>"
 }
 ```
 
-The encrypted list's plaintext:
+The encrypted fragment's plaintext. Every 32-byte value is unpadded base64url at **any** depth, join material included:
 
 ```jsonc
 {
+  "frags": 2,                                        // how many fragments this List has
   "entries": [
     {
-      "community_id": "<hex>",
-      "seed":    { /* join material at the earliest epoch held — only ever moves backward on merge */ },
-      "current": { /* join material at the freshest epoch — replaced on every Refounding or rename */ },
-      "added_at": 1719800000000                   // ms
+      "community_id": "PxpVK3nQ7sB1yTfWm4dLxZ0aRcE9uHgKjNvOpQrStUv",
+      "current": {
+        // community_id omitted — inherited from the entry
+        "owner":          "nC7hQ2eRtYuIoPaSdFgHjKlZxCvBnM1qW3eR5tY7uI9",
+        "owner_salt":     "qhEwR9tYuIoPaSdFgHjKlZxCvBnM1qW3eR5tY7uI0oP",
+        "community_root": "d70Xa1QwErTyUiOpAsDfGhJkLzXcVbNm2Qw4Er6Ty8U",
+        "root_epoch":     3,
+        "control_pk":     "DU8vB4nM6qW1eR3tY5uI7oP9aS0dF2gH4jK6lZ8xC0v",
+        "channels": [
+          { "id":  "Ch1dQwErTyUiOpAsDfGhJkLzXcVbNm2Qw4Er6Ty8U0i",
+            "key": "K3yAsDfGhJkLzXcVbNm1Qw2Er3Ty4Ui5Op6As7Df8Gh",
+            "epoch": 2, "name": "staff" }
+        ],
+        "relays": ["wss://relay.example.com"],
+        "name": "Example Community"
+      },
+      "added_at": 1719800000000                      // ms
+      // seed omitted: this membership has never been refounded, so it equals current
     }
   ],
   "tombstones": [
-    { "community_id": "<hex>", "removed_at": 1722400000000 }
+    { "community_id": "d70Xa1QwErTyUiOpAsDfGhJkLzXcVbNm2Qw4Er6Ty8U", "removed_at": 1722400000000 }
   ]
 }
 ```
 
-Join material is the bundle's membership subset: `community_id, owner, owner_salt, community_root, root_epoch, control_pk, channels, relays, name`, plus `control_root` when held (CORD-02 §2) — never the icon, never the link fields.
+Join material is the bundle's membership subset: `owner, owner_salt, community_root, root_epoch, control_pk, channels, relays, name`, plus `control_root` when held (CORD-02 §2) — never the icon, never the link fields. Embedded in an entry it omits `community_id`, inheriting the entry's; standalone (a CORD-06 §1 dissolution payload) it keeps it.
 
 ### 6.3 Kind 13303 — Invite List (CORD-05 §4)
 
