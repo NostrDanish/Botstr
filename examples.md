@@ -680,7 +680,7 @@ The encrypted fragment's plaintext. Every 32-byte value is unpadded base64url at
     }
   ],
   "tombstones": [
-    { "community_id": "d70Xa1QwErTyUiOpAsDfGhJkLzXcVbNm2Qw4Er6Ty8U", "removed_at": 1722400000000 }
+    { "community_id": "u9RfLmWx3PqZtYvBnKjHgFdSaQwErTyUiOp2C4E6G8I", "removed_at": 1722400000000 }
   ]
 }
 ```
