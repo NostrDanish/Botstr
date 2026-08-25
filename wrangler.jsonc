@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "botstr",
+  "main": "worker.ts",
+  "compatibility_date": "2026-08-25",
+  // Static dashboard (vite build output) served by Cloudflare's asset handler.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  // One Durable Object per bot = per-bot isolation (V8 isolate), state, logs,
+  // and a watchdog alarm for crash recovery.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BOT_RUNNER",
+        "class_name": "BotRunner"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["BotRunner"]
+    }
+  ],
+  // Bot registry (SQLite). Create with: npx wrangler d1 create botstr
+  // then paste the database_id below. See docs/DEPLOYMENT.md.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "botstr",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Set with: npx wrangler secret put BOTSTR_SECRET
+  // (encrypts every bot's private key at rest inside its Durable Object)
+  "vars": {}
+}
