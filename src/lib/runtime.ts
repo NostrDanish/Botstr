@@ -187,9 +187,17 @@ class CloudflareAdapter implements Adapter {
     try {
       const res = await fetch(`./api/bots/${botId}`)
       if (!res.ok) return undefined
-      const data = (await res.json()) as { live?: BotLiveState }
-      if (data.live) this.states.set(botId, data.live)
-      return data.live
+      const data = (await res.json()) as { live?: BotLiveState; storage?: { usedBytes: number; quotaMB: number } }
+      if (data.live) {
+        const live: BotLiveState = {
+          ...data.live,
+          storageUsedBytes: data.storage?.usedBytes,
+          storageQuotaMB: data.storage?.quotaMB,
+        }
+        this.states.set(botId, live)
+        return live
+      }
+      return undefined
     } catch {
       return undefined
     }
@@ -299,7 +307,7 @@ class Manager {
         available: this.cloudAvailable,
         reason: this.cloudAvailable
           ? 'Bots run as Durable Objects on your deployed Botstr worker — they stay online when you close this tab.'
-          : 'Deploy Botstr to Cloudflare to enable always-on bots (see docs/DEPLOYMENT.md).',
+          : 'Deploy Botstr to your Cloudflare account to enable always-on bot nodes. Works on the free plan (daily caps); paid for fleets. See docs/DEPLOYMENT.md.',
         capabilities: { ...nostrCaps, alwaysOn: true },
       },
       {

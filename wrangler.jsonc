@@ -34,6 +34,14 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Optional: per-node object storage (bot files/media, quota-enforced per bot).
+  // Create with: npx wrangler r2 bucket create botstr-storage
+  // "r2_buckets": [
+  //   {
+  //     "binding": "BOT_STORAGE",
+  //     "bucket_name": "botstr-storage"
+  //   }
+  // ],
   // Set with: npx wrangler secret put BOTSTR_SECRET
   // (encrypts every bot's private key at rest inside its Durable Object)
   "vars": {}

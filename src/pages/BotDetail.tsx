@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { nip19 } from 'nostr-tools'
 import { ChevronLeft, Download, Eye, EyeOff, Play, RotateCw, Square, Trash2 } from 'lucide-react'
 import { manager, runtimeLabel } from '../lib/runtime'
 import { openSecret } from '../lib/vault'
@@ -176,6 +177,52 @@ export default function BotDetail() {
               {r.replace('wss://', '')}
             </span>
           ))}
+        </div>
+      </Card>
+
+      {/* the Bot Node — every bot is its own little piece of infrastructure */}
+      <Card className="mb-6 p-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs sm:grid-cols-4">
+          <div>
+            <div className="text-muted">🪪 Identity</div>
+            <div className="mt-0.5 font-mono">{nip19.npubEncode(bot.pubkey).slice(0, 16)}…</div>
+          </div>
+          <div>
+            <div className="text-muted">⚙️ Runtime</div>
+            <div className="mt-0.5">{bot.executor === 'browser' ? 'Web Worker (this tab)' : bot.executor === 'cloudflare' ? 'Durable Object' : 'runner'}</div>
+          </div>
+          <div>
+            <div className="text-muted">📡 Gateway</div>
+            <div className="mt-0.5">{bot.relays.length} relay{bot.relays.length === 1 ? '' : 's'}</div>
+          </div>
+          <div>
+            <div className="text-muted">🗄️ Database</div>
+            <div className="mt-0.5">{bot.executor === 'browser' ? 'IndexedDB, this device' : 'Node SQLite (DO)'}</div>
+          </div>
+          <div>
+            <div className="text-muted">📦 Storage</div>
+            <div className="mt-0.5">
+              {bot.executor === 'browser'
+                ? 'browser runtime only'
+                : bot.live.storageQuotaMB !== undefined
+                  ? `${(Number(bot.live.storageUsedBytes ?? 0) / 1048576).toFixed(1)} / ${bot.live.storageQuotaMB} MB`
+                  : 'not running'}
+            </div>
+          </div>
+          <div>
+            <div className="text-muted">🔐 Secrets</div>
+            <div className="mt-0.5">sealed · AES-256-GCM</div>
+          </div>
+          <div>
+            <div className="text-muted">📊 Monitoring</div>
+            <div className="mt-0.5">
+              {running && bot.live.startedAt ? `up ${formatUptime(bot.live.startedAt, now)}` : bot.live.status}
+            </div>
+          </div>
+          <div>
+            <div className="text-muted">📝 Logs</div>
+            <div className="mt-0.5">live stream below</div>
+          </div>
         </div>
       </Card>
 

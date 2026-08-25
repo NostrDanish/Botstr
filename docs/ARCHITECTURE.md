@@ -44,6 +44,14 @@ touches a private key outside the vault.
 | Worker entry | `src/lib/worker-entry.ts` | Browser executor: one Web Worker per bot. |
 | Cloud runtime | `worker.ts` | API + `BotRunner` Durable Object (per-bot isolate, encrypted secrets, watchdog alarm). |
 
+## The Bot Node
+
+Every bot is a **node**: its own identity, isolate, relay gateway, SQLite
+database, object-storage quota, sealed secrets, monitoring and logs. One bot
+can never contaminate another's state. The full model — verified Cloudflare
+quotas, the per-bot-D1 upgrade path, and the "deploy to your own account"
+distribution story — lives in [BOT-NODE.md](BOT-NODE.md).
+
 ## The BotRuntime contract
 
 ```ts

@@ -6,6 +6,10 @@ Botstr is an open-source, self-hostable deployment platform for Nostr-based bots
 
 No Rust. No Docker. No relay administration. No fake dashboard — status, logs and events are the bot's actual runtime output.
 
+**Every bot gets its own node** — its own identity, isolate, database, sealed secrets, storage quota and logs (see [docs/BOT-NODE.md](docs/BOT-NODE.md)). And Botstr never hosts your infrastructure: you deploy the whole platform into **your own** Cloudflare account with one click:
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/NostrDanish/Botstr)
+
 ```
 Choose template → Configure → Generate identity → Relays → Permissions → Secrets → Deploy
         │

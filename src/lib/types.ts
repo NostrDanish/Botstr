@@ -70,6 +70,9 @@ export interface BotLiveState {
   status: BotStatus
   startedAt?: number
   detail?: string
+  /** cloud executor reports node storage */
+  storageUsedBytes?: number
+  storageQuotaMB?: number
 }
 
 export interface Capabilities {

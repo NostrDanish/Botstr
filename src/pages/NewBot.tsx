@@ -428,6 +428,12 @@ export default function NewBot() {
         {step === 4 && (
           <div>
             <p className="mb-4 text-sm text-muted">Relays carry your bot's encrypted traffic. Pick at least one.</p>
+            {draft.executor === 'cloudflare' && (
+              <p className="mb-4 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2 text-xs text-warn">
+                Cloudflare executor: keep it to 6 relays or fewer — the platform caps outgoing connections at 6 per
+                invocation.
+              </p>
+            )}
             <div className="space-y-2">
               {draft.relays.map((url) => (
                 <div key={url} className="flex items-center gap-3 rounded-lg border border-border bg-bg px-3 py-2">

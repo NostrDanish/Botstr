@@ -52,10 +52,21 @@ interface DurableObjectNs {
 interface AssetsBinding {
   fetch(request: Request): Promise<Response>
 }
+interface R2ObjectInfo {
+  key: string
+  size: number
+}
+interface R2Bucket {
+  put(key: string, value: ArrayBuffer, opts?: { httpMetadata?: { contentType?: string } }): Promise<unknown>
+  get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer>; httpMetadata?: { contentType?: string } } | null>
+  delete(key: string): Promise<void>
+}
 interface Env {
   BOT_RUNNER: DurableObjectNs
   DB: D1
   ASSETS: AssetsBinding
+  /** optional object storage for per-node files (see docs/BOT-NODE.md) */
+  BOT_STORAGE?: R2Bucket
   BOTSTR_SECRET?: string
 }
 
@@ -130,10 +141,23 @@ export default {
       const stub = env.BOT_RUNNER.get(env.BOT_RUNNER.idFromName(body.record.id))
       const res = await stub.fetch('https://do/provision', {
         method: 'POST',
-        body: JSON.stringify({ nsecHex: body.nsecHex, secrets: body.secrets ?? {} }),
+        body: JSON.stringify({ nsecHex: body.nsecHex, secrets: body.secrets ?? {}, botId: body.record.id }),
       })
       if (!res.ok) return err(500, `provision failed: ${await res.text()}`)
       return json({ ok: true })
+    }
+
+    // /api/bots/:id/files[/*] — per-node object storage, proxied to the DO
+    const fm = url.pathname.match(/^\/api\/bots\/([0-9a-f]{16})\/files(?:\/(.*))?$/)
+    if (fm) {
+      const [, botId, path] = fm
+      const stub = env.BOT_RUNNER.get(env.BOT_RUNNER.idFromName(botId))
+      const res = await stub.fetch(`https://do/files${path ? `/${path}` : ''}`, {
+        method: request.method,
+        headers: { 'content-type': request.headers.get('content-type') ?? 'application/octet-stream' },
+        body: request.method === 'PUT' ? await request.arrayBuffer() : undefined,
+      })
+      return new Response(res.body, { status: res.status, headers: res.headers })
     }
 
     const m = url.pathname.match(/^\/api\/bots\/([0-9a-f]{16})(?:\/(start|stop|restart|logs|events))?$/)
@@ -151,8 +175,15 @@ export default {
     }
 
     if (!action && request.method === 'GET') {
-      const state = (await (await stub.fetch('https://do/state')).json()) as { live?: BotLiveState }
-      return json({ ...(JSON.parse(row.record) as BotRecord), live: state.live ?? { status: 'stopped' } })
+      const state = (await (await stub.fetch('https://do/state')).json()) as {
+        live?: BotLiveState
+        storage?: { usedBytes: number; quotaMB: number }
+      }
+      return json({
+        ...(JSON.parse(row.record) as BotRecord),
+        live: state.live ?? { status: 'stopped' },
+        storage: state.storage,
+      })
     }
 
     if (action === 'logs' || action === 'events') {
@@ -275,12 +306,94 @@ export class BotRunner {
     }
   }
 
+  // ---------------------------------------------------------- node storage
+  // Per-node file store. R2-backed when the BOT_STORAGE bucket is bound,
+  // otherwise DO storage (small files only). Quota is a LOGICAL limit —
+  // the operator sets it against their plan's real numbers (docs/BOT-NODE.md).
+
+  private async quotaMB(): Promise<number> {
+    const config = await this.state.storage.get<BotRecord | null>('config')
+    return Number((config?.config?.storageQuotaMB as number | undefined) ?? 25)
+  }
+
+  private async fileSizes(): Promise<Record<string, number>> {
+    return (await this.state.storage.get<Record<string, number>>('fileSizes')) ?? {}
+  }
+
+  private async usedBytes(): Promise<number> {
+    return (await this.state.storage.get<number>('storageUsed')) ?? 0
+  }
+
+  private async handleFiles(request: Request, path: string): Promise<Response> {
+    const botId = (await this.state.storage.get<string>('botId')) ?? 'unprovisioned'
+    const ct = request.headers.get('content-type') ?? 'application/octet-stream'
+
+    if (request.method === 'PUT' && path) {
+      const bytes = await request.arrayBuffer()
+      const sizes = await this.fileSizes()
+      const used = (await this.usedBytes()) - (sizes[path] ?? 0)
+      const quota = (await this.quotaMB()) * 1024 * 1024
+      if (used + bytes.byteLength > quota) return err(413, `node storage quota exceeded (${await this.quotaMB()} MB)`)
+      if (!this.env.BOT_STORAGE && bytes.byteLength > 1_500_000)
+        return err(413, 'bind an R2 bucket (BOT_STORAGE) for files over 1.5 MB')
+      if (this.env.BOT_STORAGE) {
+        await this.env.BOT_STORAGE.put(`bots/${botId}/${path}`, bytes, { httpMetadata: { contentType: ct } })
+      } else {
+        await this.state.storage.put(`file:${path}`, bytes)
+      }
+      sizes[path] = bytes.byteLength
+      await this.state.storage.put('fileSizes', sizes)
+      await this.state.storage.put('storageUsed', used + bytes.byteLength)
+      return json({ ok: true, path, size: bytes.byteLength })
+    }
+
+    if (request.method === 'GET' && path) {
+      if (this.env.BOT_STORAGE) {
+        const obj = await this.env.BOT_STORAGE.get(`bots/${botId}/${path}`)
+        if (!obj) return err(404, 'not found')
+        return new Response(await obj.arrayBuffer(), {
+          headers: { 'content-type': obj.httpMetadata?.contentType ?? 'application/octet-stream' },
+        })
+      }
+      const data = await this.state.storage.get<ArrayBuffer>(`file:${path}`)
+      if (!data) return err(404, 'not found')
+      return new Response(data, { headers: { 'content-type': 'application/octet-stream' } })
+    }
+
+    if (request.method === 'GET') {
+      const sizes = await this.fileSizes()
+      return json({
+        files: Object.entries(sizes).map(([key, size]) => ({ key, size })),
+        usedBytes: await this.usedBytes(),
+        quotaMB: await this.quotaMB(),
+      })
+    }
+
+    if (request.method === 'DELETE' && path) {
+      const sizes = await this.fileSizes()
+      if (!(path in sizes)) return err(404, 'not found')
+      if (this.env.BOT_STORAGE) await this.env.BOT_STORAGE.delete(`bots/${botId}/${path}`)
+      else await this.state.storage.delete(`file:${path}`)
+      const used = (await this.usedBytes()) - sizes[path]
+      delete sizes[path]
+      await this.state.storage.put('fileSizes', sizes)
+      await this.state.storage.put('storageUsed', Math.max(0, used))
+      return json({ ok: true })
+    }
+
+    return err(405, 'method not allowed')
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
 
+    const fm = url.pathname.match(/^\/files(?:\/(.*))?$/)
+    if (fm) return this.handleFiles(request, fm[1] ?? '')
+
     if (url.pathname === '/provision' && request.method === 'POST') {
       if (!this.env.BOTSTR_SECRET) return err(500, 'BOTSTR_SECRET not set')
-      const body = (await request.json()) as { nsecHex: string; secrets: Record<string, string> }
+      const body = (await request.json()) as { nsecHex: string; secrets: Record<string, string>; botId?: string }
+      if (body.botId) await this.state.storage.put('botId', body.botId)
       await this.state.storage.put('nsec', await sealKey(this.env.BOTSTR_SECRET, body.nsecHex))
       const sealed: Record<string, string> = {}
       for (const [k, v] of Object.entries(body.secrets ?? {})) sealed[k] = await sealKey(this.env.BOTSTR_SECRET, v)
@@ -319,7 +432,7 @@ export class BotRunner {
 
     if (url.pathname === '/state') {
       const live = (await this.state.storage.get<BotLiveState>('live')) ?? { status: 'stopped' }
-      return json({ live })
+      return json({ live, storage: { usedBytes: await this.usedBytes(), quotaMB: await this.quotaMB() } })
     }
 
     if (url.pathname === '/logs' || url.pathname === '/events') {
