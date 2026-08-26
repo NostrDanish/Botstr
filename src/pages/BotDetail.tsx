@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
-import { ChevronLeft, Download, Eye, EyeOff, Play, RotateCw, Square, Trash2 } from 'lucide-react'
+import { ChevronLeft, Download, Eye, EyeOff, Package, Play, RefreshCw, RotateCw, Square, Trash2 } from 'lucide-react'
 import { manager, runtimeLabel } from '../lib/runtime'
 import { openSecret } from '../lib/vault'
 import { useBot, useNow } from '../lib/hooks'
@@ -23,6 +23,9 @@ export default function BotDetail() {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [revealed, setRevealed] = useState<string | null>(null)
   const [confirmReveal, setConfirmReveal] = useState(false)
+  const [confirmRotate, setConfirmRotate] = useState(false)
+  const [confirmExport, setConfirmExport] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [envDraft, setEnvDraft] = useState<Record<string, string>>({})
   const [secretDraft, setSecretDraft] = useState<Record<string, string>>({})
 
@@ -68,6 +71,27 @@ export default function BotDetail() {
     a.click()
     URL.revokeObjectURL(a.href)
   }
+
+  const exportBundle = (includeIdentity: boolean) => {
+    setBusy(true)
+    void manager
+      .exportBot(bot.id, includeIdentity)
+      .then((json) => {
+        const blob = new Blob([json], { type: 'application/json' })
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = `${bot.name}.botstr.json`
+        a.click()
+        URL.revokeObjectURL(a.href)
+      })
+      .catch((e) => alert(String(e)))
+      .finally(() => {
+        setBusy(false)
+        setConfirmExport(false)
+      })
+  }
+
+  const relayUrl = bot.gateway !== 'private' && bot.executor === 'cloudflare' ? `wss://${location.host}/nodes/${bot.id}/relay` : null
 
   return (
     <div>
@@ -123,6 +147,31 @@ export default function BotDetail() {
                 Confirm reveal
               </Btn>
             )}
+            {!confirmRotate ? (
+              <Btn onClick={() => setConfirmRotate(true)} title="Generate a fresh identity; the old key is destroyed">
+                <RefreshCw size={14} /> Rotate identity
+              </Btn>
+            ) : (
+              <>
+                <Btn
+                  variant="danger"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true)
+                    void manager
+                      .rotateIdentity(bot.id)
+                      .catch((e) => alert(String(e)))
+                      .finally(() => {
+                        setBusy(false)
+                        setConfirmRotate(false)
+                      })
+                  }}
+                >
+                  Rotate (destroys old key)
+                </Btn>
+                <Btn onClick={() => setConfirmRotate(false)}>Cancel</Btn>
+              </>
+            )}
             {!confirmDelete ? (
               <Btn variant="danger" onClick={() => setConfirmDelete(true)}>
                 <Trash2 size={14} /> Delete
@@ -174,10 +223,35 @@ export default function BotDetail() {
         <div className="mt-4 flex flex-wrap gap-1.5">
           {bot.relays.map((r) => (
             <span key={r} className="rounded-full border border-border bg-bg px-2.5 py-1 font-mono text-[10px] text-muted">
-              {r.replace('wss://', '')}
+              ↑ {r.replace('wss://', '')}
             </span>
           ))}
+          {relayUrl && (
+            <span className="flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/5 px-2.5 py-1 font-mono text-[10px] text-accent">
+              ↓ {relayUrl.replace('wss://', '')}
+              <CopyBtn text={relayUrl} />
+            </span>
+          )}
         </div>
+
+        {bot.executor === 'cloudflare' && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4 text-xs text-muted">
+            <span>Gateway mode:</span>
+            <select
+              value={bot.gateway}
+              onChange={(e) => {
+                const gateway = e.target.value as BotRecord['gateway']
+                void manager.updateBot({ ...bot, gateway }).catch((err) => alert(String(err)))
+              }}
+              className="rounded-lg border border-border bg-bg px-2 py-1 text-xs text-text"
+            >
+              <option value="private">private — relay closed</option>
+              <option value="gateway">gateway — events for/from this bot only</option>
+              <option value="public">public — open relay (rate-limited)</option>
+            </select>
+            {running && <span className="text-warn">applies fully on restart</span>}
+          </div>
+        )}
       </Card>
 
       {/* the Bot Node — every bot is its own little piece of infrastructure */}
@@ -193,7 +267,17 @@ export default function BotDetail() {
           </div>
           <div>
             <div className="text-muted">📡 Gateway</div>
-            <div className="mt-0.5">{bot.relays.length} relay{bot.relays.length === 1 ? '' : 's'}</div>
+            <div className="mt-0.5">
+              {bot.executor === 'cloudflare' ? (
+                bot.gateway === 'private' ? (
+                  'private · outbound only'
+                ) : (
+                  <span className="text-accent">{bot.gateway}</span>
+                )
+              ) : (
+                `${bot.relays.length} relay${bot.relays.length === 1 ? '' : 's'} · outbound`
+              )}
+            </div>
           </div>
           <div>
             <div className="text-muted">🗄️ Database</div>
@@ -265,11 +349,32 @@ export default function BotDetail() {
 
       {tab === 'config' && (
         <div>
-          <div className="mb-3 flex justify-end">
+          <div className="mb-3 flex items-center justify-end gap-2">
             <Btn size="sm" onClick={downloadManifest}>
-              <Download size={13} /> Export bot.yaml
+              <Download size={13} /> bot.yaml
             </Btn>
+            {!confirmExport ? (
+              <Btn size="sm" onClick={() => setConfirmExport(true)}>
+                <Package size={13} /> Export bundle
+              </Btn>
+            ) : (
+              <>
+                <Btn size="sm" variant="danger" disabled={busy} onClick={() => exportBundle(true)}>
+                  With identity + secrets
+                </Btn>
+                <Btn size="sm" disabled={busy} onClick={() => exportBundle(false)}>
+                  Config only
+                </Btn>
+                <Btn size="sm" onClick={() => setConfirmExport(false)}>
+                  Cancel
+                </Btn>
+              </>
+            )}
           </div>
+          <p className="mb-3 text-xs text-muted">
+            A bundle is the portable node: manifest, identity (optional), secrets (optional) and state. Import it on any
+            other Botstr instance — your bot is never locked in.
+          </p>
           <pre className="max-h-96 overflow-auto rounded-lg border border-border bg-bg p-4 font-mono text-xs leading-5 text-text/80">
             {yaml}
           </pre>

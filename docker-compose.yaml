@@ -1,0 +1,17 @@
+# Botstr — self-host the entire platform with one command.
+#   BOTSTR_SECRET=$(openssl rand -hex 32) docker compose up -d
+# Then open http://localhost:8787
+services:
+  botstr:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      # REQUIRED. Any long random string. Back this up: it decrypts every bot key.
+      BOTSTR_SECRET: ${BOTSTR_SECRET:?Set BOTSTR_SECRET (e.g. openssl rand -hex 32)}
+    volumes:
+      - botstr-data:/data
+    restart: unless-stopped
+
+volumes:
+  botstr-data:

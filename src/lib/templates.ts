@@ -129,7 +129,6 @@ const command: TemplateDef = {
 }
 
 // ---------------------------------------------------------------- ai
-const aiHistoryKey = (from: string) => `chat:${from}`
 interface ChatMsg {
   role: 'system' | 'user' | 'assistant'
   content: string
@@ -140,13 +139,13 @@ const ai: TemplateDef = {
   name: 'AI Bot',
   tagline: 'An LLM in your DMs — any OpenAI-compatible endpoint.',
   description:
-    'Chats through any OpenAI-compatible API: OpenAI, OpenRouter, Ollama, LM Studio, a self-hosted vLLM — anything that speaks /chat/completions. Per-chat history is kept in bot-local state.',
+    'Chats through any OpenAI-compatible API: OpenAI, OpenRouter, Ollama, LM Studio, a self-hosted vLLM — anything that speaks /chat/completions. Conversation memory lives in the node, not at the provider.',
   category: 'AI',
   icon: 'Sparkles',
   runtimeSupport: ['nostr'],
   defaults: {
     triggers: ['message', 'mention'],
-    permissions: { receiveMessages: true, sendMessages: true, publicMentions: true },
+    permissions: { receiveMessages: true, sendMessages: true, publicMentions: true, outboundHttp: true },
     relays: DEFAULT_RELAYS,
   },
   env: [
@@ -165,42 +164,43 @@ const ai: TemplateDef = {
   ],
   commands: ['/reset'],
   module: {
-    async onMessage(ctx, msg) {
+    async onMessage(node, msg) {
       if (msg.text.trim() === '/reset') {
-        ctx.state.set(aiHistoryKey(msg.from), [])
-        await ctx.reply(msg, 'Conversation reset.')
+        node.memory.clearHistory(msg.from)
+        await node.reply(msg, 'Conversation reset.')
         return
       }
-      const base = (ctx.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
-      const key = ctx.env.OPENAI_API_KEY
+      const base = (node.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+      const key = node.env.OPENAI_API_KEY
       if (!key) {
-        await ctx.reply(msg, 'My operator forgot to set OPENAI_API_KEY.')
+        await node.reply(msg, 'My operator forgot to set OPENAI_API_KEY.')
         return
       }
-      const history = ctx.state.get<ChatMsg[]>(aiHistoryKey(msg.from)) ?? []
+      const history = node.memory.history<ChatMsg>(msg.from)
       const messages: ChatMsg[] = [
-        { role: 'system', content: String(ctx.config.systemPrompt ?? 'You are a helpful assistant.') },
+        { role: 'system', content: String(node.config.systemPrompt ?? 'You are a helpful assistant.') },
         ...history,
         { role: 'user', content: msg.text },
       ]
       const ctrl = new AbortController()
       const timeout = setTimeout(() => ctrl.abort(), 45_000)
       try {
-        const res = await ctx.fetch(`${base}/chat/completions`, {
+        const res = await node.fetch(`${base}/chat/completions`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-          body: JSON.stringify({ model: ctx.env.MODEL || 'gpt-4o-mini', messages }),
+          body: JSON.stringify({ model: node.env.MODEL || 'gpt-4o-mini', messages }),
           signal: ctrl.signal,
         })
         if (!res.ok) throw new Error(`LLM endpoint ${res.status}: ${(await res.text()).slice(0, 200)}`)
         const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
         const answer = data.choices?.[0]?.message?.content?.trim() || '(empty response)'
-        const maxHistory = Number(ctx.config.maxHistory ?? 12)
-        ctx.state.set(aiHistoryKey(msg.from), [...history, { role: 'user', content: msg.text }, { role: 'assistant', content: answer }].slice(-maxHistory))
-        await ctx.reply(msg, answer.slice(0, 4000))
+        const maxHistory = Number(node.config.maxHistory ?? 12)
+        node.memory.appendHistory(msg.from, { role: 'user', content: msg.text }, maxHistory)
+        node.memory.appendHistory(msg.from, { role: 'assistant', content: answer }, maxHistory)
+        await node.reply(msg, answer.slice(0, 4000))
       } catch (e) {
-        ctx.log('error', `LLM call failed: ${e instanceof Error ? e.message : String(e)}`)
-        await ctx.reply(msg, 'My brain is unreachable right now — the LLM endpoint errored. Try again in a bit.')
+        node.log('error', `LLM call failed: ${e instanceof Error ? e.message : String(e)}`)
+        await node.reply(msg, 'My brain is unreachable right now — the LLM endpoint errored. Try again in a bit.')
       } finally {
         clearTimeout(timeout)
       }
@@ -259,9 +259,11 @@ const moderation: TemplateDef = {
 }
 
 // ---------------------------------------------------------------- price
-async function fetchPrices(ids: string[], currency: string): Promise<Record<string, { price: number; change: number }>> {
+type Fetcher = (url: string, init?: RequestInit) => Promise<Response>
+
+async function fetchPrices(fetcher: Fetcher, ids: string[], currency: string): Promise<Record<string, { price: number; change: number }>> {
   const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(ids.join(','))}&vs_currencies=${encodeURIComponent(currency)}&include_24hr_change=true`
-  const res = await fetch(url)
+  const res = await fetcher(url)
   if (!res.ok) throw new Error(`CoinGecko ${res.status}`)
   const data = (await res.json()) as Record<string, Record<string, number>>
   const out: Record<string, { price: number; change: number }> = {}
@@ -290,7 +292,7 @@ const price: TemplateDef = {
   runtimeSupport: ['nostr'],
   defaults: {
     triggers: ['message', 'schedule'],
-    permissions: { receiveMessages: true, sendMessages: true },
+    permissions: { receiveMessages: true, sendMessages: true, outboundHttp: true },
     relays: DEFAULT_RELAYS,
   },
   env: [],
@@ -302,32 +304,32 @@ const price: TemplateDef = {
   ],
   commands: ['/price'],
   module: {
-    async onMessage(ctx, msg) {
+    async onMessage(node, msg) {
       const text = msg.text.trim()
       if (!text.startsWith('/price')) return
       const requested = args(text)
-      const assets = (ctx.config.assets as string[] | undefined) ?? ['bitcoin']
+      const assets = (node.config.assets as string[] | undefined) ?? ['bitcoin']
       const ids = requested ? [requested.toLowerCase()] : assets
       try {
-        const prices = await fetchPrices(ids, String(ctx.config.currency ?? 'usd'))
-        await ctx.reply(msg, formatPrices(prices, String(ctx.config.currency ?? 'usd')))
+        const prices = await fetchPrices(node.fetch, ids, String(node.config.currency ?? 'usd'))
+        await node.reply(msg, formatPrices(prices, String(node.config.currency ?? 'usd')))
       } catch (e) {
-        ctx.log('error', `price fetch failed: ${e instanceof Error ? e.message : String(e)}`)
-        await ctx.reply(msg, 'Price feed is unavailable right now.')
+        node.log('error', `price fetch failed: ${e instanceof Error ? e.message : String(e)}`)
+        await node.reply(msg, 'Price feed is unavailable right now.')
       }
     },
-    async onTick(ctx, now) {
-      if (!ctx.config.broadcast) return
-      if (!ctx.permissions.publishPublic) return
-      const intervalMs = Math.max(5, Number(ctx.config.intervalMinutes ?? 60)) * 60_000
-      const last = ctx.state.get<number>('lastBroadcast') ?? 0
+    async onTick(node, now) {
+      if (!node.config.broadcast) return
+      if (!node.permissions.publishPublic) return
+      const intervalMs = Math.max(5, Number(node.config.intervalMinutes ?? 60)) * 60_000
+      const last = node.state.get<number>('lastBroadcast') ?? 0
       if (now - last < intervalMs) return
-      ctx.state.set('lastBroadcast', now)
+      node.state.set('lastBroadcast', now)
       try {
-        const prices = await fetchPrices((ctx.config.assets as string[]) ?? ['bitcoin'], String(ctx.config.currency ?? 'usd'))
-        await ctx.post(formatPrices(prices, String(ctx.config.currency ?? 'usd')))
+        const prices = await fetchPrices(node.fetch, (node.config.assets as string[]) ?? ['bitcoin'], String(node.config.currency ?? 'usd'))
+        await node.post(formatPrices(prices, String(node.config.currency ?? 'usd')))
       } catch (e) {
-        ctx.log('error', `broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+        node.log('error', `broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
       }
     },
   },
@@ -370,7 +372,7 @@ const rss: TemplateDef = {
   runtimeSupport: ['nostr'],
   defaults: {
     triggers: ['schedule'],
-    permissions: { publishPublic: true },
+    permissions: { publishPublic: true, outboundHttp: true },
     relays: DEFAULT_RELAYS,
   },
   env: [],

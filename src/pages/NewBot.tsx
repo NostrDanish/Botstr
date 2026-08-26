@@ -3,12 +3,22 @@ import { useNavigate } from 'react-router-dom'
 import { Check, ChevronLeft, ChevronRight, RefreshCw, X } from 'lucide-react'
 import { manager } from '../lib/runtime'
 import { getTemplate, TEMPLATES, TEMPLATE_CATEGORIES, type FieldSpec, type TemplateDef } from '../lib/templates'
-import { manifestFromBot, manifestToYaml } from '../lib/manifest'
+import { capabilityReview, manifestFromBot, manifestToYaml } from '../lib/manifest'
 import type { Identity } from '../lib/identity'
-import { DEFAULT_RELAYS, uid, type BotPermissions, type BotRecord, type ExecutorType, type RuntimeType } from '../lib/types'
+import {
+  DEFAULT_RELAYS,
+  DEFAULT_RESOURCES,
+  uid,
+  type BotPermissions,
+  type BotRecord,
+  type BotResources,
+  type ExecutorType,
+  type GatewayMode,
+  type RuntimeType,
+} from '../lib/types'
 import { Btn, Card, Field, Input, Select, Textarea, Toggle, cn } from '../components/ui'
 
-const STEPS = ['Template', 'Name', 'Identity', 'Runtime', 'Relays', 'Permissions', 'Environment', 'Review']
+const STEPS = ['Template', 'Name', 'Identity', 'Provider', 'Relays', 'Capabilities', 'Environment', 'Review']
 
 interface Draft {
   template?: TemplateDef
@@ -17,21 +27,57 @@ interface Draft {
   identityMode: 'generate' | 'import'
   identity: Identity | null
   executor: ExecutorType
+  gateway: GatewayMode
   relays: string[]
   permissions: BotPermissions
+  resources: BotResources
   env: Record<string, string>
   secrets: Record<string, string>
   config: Record<string, unknown>
 }
 
-const ALL_PERMISSIONS: { key: keyof BotPermissions; label: string; help: string; vectorOnly?: boolean }[] = [
-  { key: 'receiveMessages', label: 'Receive messages', help: 'Listen for encrypted DMs (NIP-17)' },
-  { key: 'sendMessages', label: 'Send messages', help: 'Reply and send encrypted DMs' },
-  { key: 'publicMentions', label: 'Public mentions', help: 'Watch for and answer public mentions' },
-  { key: 'publishPublic', label: 'Publish publicly', help: 'Post public notes (needed for RSS/price broadcasts)' },
-  { key: 'reactions', label: 'Reactions', help: 'Requires the Vector runtime', vectorOnly: true },
-  { key: 'files', label: 'Files', help: 'Requires the Vector runtime', vectorOnly: true },
-  { key: 'moderation', label: 'Moderation', help: 'Community kicks/bans require the Vector runtime; word-filtering works on Nostr', vectorOnly: false },
+interface CapDef {
+  keys: (keyof BotPermissions)[]
+  name: string
+  label: string
+  help: string
+  unavailable?: string
+}
+const CAP_GROUPS: { group: string; caps: CapDef[] }[] = [
+  {
+    group: 'Messaging',
+    caps: [
+      { keys: ['receiveMessages', 'sendMessages'], name: 'messaging.dm', label: 'Encrypted DMs', help: 'Receive and answer NIP-17 direct messages' },
+      { keys: ['publicMentions'], name: 'messaging.public', label: 'Public mentions', help: 'Watch for and answer public mentions' },
+      { keys: ['reactions'], name: 'messaging.reactions', label: 'Reactions', help: 'Requires the Vector runtime', unavailable: 'Vector runtime' },
+    ],
+  },
+  {
+    group: 'Nostr',
+    caps: [{ keys: ['publishPublic'], name: 'nostr.publish', label: 'Publish public notes', help: 'Post kind-1 notes (RSS, price broadcasts)' }],
+  },
+  {
+    group: 'Storage',
+    caps: [{ keys: ['files'], name: 'storage.files', label: 'File storage', help: 'Object storage inside the node, quota-enforced' }],
+  },
+  {
+    group: 'Network',
+    caps: [{ keys: ['outboundHttp'], name: 'network.outbound_http', label: 'Outbound HTTP', help: 'Call external APIs (AI endpoints, feeds, price oracles)' }],
+  },
+  {
+    group: 'Moderation',
+    caps: [{ keys: ['moderation'], name: 'moderation.enabled', label: 'Moderation', help: 'Word filters work on Nostr; kicks/bans need the Vector runtime' }],
+  },
+  {
+    group: 'Wallet',
+    caps: [{ keys: [], name: 'wallet.zap', label: 'Zaps / wallet', help: 'Not implemented on any runtime yet', unavailable: 'not implemented yet' }],
+  },
+]
+
+const GATEWAY_MODES: { id: GatewayMode; label: string; help: string }[] = [
+  { id: 'private', label: 'Private', help: 'The node only dials out to relays. Its relay endpoint stays closed.' },
+  { id: 'gateway', label: 'Gateway', help: 'The node gets its own relay URL. Clients can read the node’s events and send events addressed to the bot.' },
+  { id: 'public', label: 'Public', help: 'The node’s relay accepts events from anyone (rate-limited). For bots that publish a public feed.' },
 ]
 
 async function testRelay(url: string): Promise<boolean> {
@@ -113,8 +159,10 @@ export default function NewBot() {
     identityMode: 'generate',
     identity: null,
     executor: 'browser',
+    gateway: 'private',
     relays: [...DEFAULT_RELAYS.slice(0, 2)],
-    permissions: { receiveMessages: true, sendMessages: true, publicMentions: false, publishPublic: false, reactions: false, files: false, moderation: false },
+    permissions: { receiveMessages: true, sendMessages: true, publicMentions: false, publishPublic: false, reactions: false, files: false, moderation: false, outboundHttp: false },
+    resources: { ...DEFAULT_RESOURCES },
     env: {},
     secrets: {},
     config: {},
@@ -205,6 +253,8 @@ export default function NewBot() {
         template: template.id,
         runtime: template.runtimeSupport[0] as RuntimeType,
         executor: draft.executor,
+        gateway: draft.executor === 'cloudflare' ? draft.gateway : 'private',
+        resources: draft.resources,
         version: '1.0.0',
         pubkey: draft.identity.pubkey,
         relays: draft.relays,
@@ -232,6 +282,8 @@ export default function NewBot() {
       template: template.id,
       runtime: 'nostr',
       executor: draft.executor,
+      gateway: draft.executor === 'cloudflare' ? draft.gateway : 'private',
+      resources: draft.resources,
       version: '1.0.0',
       pubkey: draft.identity.pubkey,
       relays: draft.relays,
@@ -248,8 +300,11 @@ export default function NewBot() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <h1 className="mb-1 text-2xl font-bold">Deploy a bot</h1>
-      <p className="mb-6 text-sm text-muted">Eight short steps. No Rust, no servers, no protocol knowledge required.</p>
+      <h1 className="mb-1 text-2xl font-bold">Deploy a Bot Node</h1>
+      <p className="mb-6 text-sm text-muted">
+        Every node gets its own identity, runtime, database, storage quota, secrets and logs. No Rust, no servers, no
+        protocol knowledge required.
+      </p>
 
       {/* stepper */}
       <div className="mb-8 flex flex-wrap gap-1">
@@ -394,9 +449,13 @@ export default function NewBot() {
           </div>
         )}
 
-        {/* ------------------------------------------------ runtime */}
+        {/* ------------------------------------------------ provider */}
         {step === 3 && (
           <div className="space-y-3">
+            <p className="mb-1 text-sm text-muted">
+              <strong className="text-text">Where</strong> should the node run? (The runtime — what protocol it speaks —
+              stays portable.)
+            </p>
             {runtimes.map((r) => (
               <button
                 key={`${r.runtime}-${r.executor}`}
@@ -421,6 +480,33 @@ export default function NewBot() {
                 </p>
               </button>
             ))}
+
+            {draft.executor === 'cloudflare' && (
+              <div className="mt-5 border-t border-border pt-5">
+                <h3 className="mb-1 text-sm font-semibold">Node gateway</h3>
+                <p className="mb-3 text-xs text-muted">
+                  Should this node expose its own relay endpoint (wss://…/nodes/&lt;id&gt;/relay)?
+                </p>
+                <div className="space-y-2">
+                  {GATEWAY_MODES.map((g) => (
+                    <button
+                      key={g.id}
+                      onClick={() => patch({ gateway: g.id })}
+                      className={cn(
+                        'block w-full rounded-xl border p-3 text-left',
+                        draft.gateway === g.id ? 'border-accent bg-accent/5' : 'border-border bg-panel2 hover:border-border2',
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">{g.label}</span>
+                        {draft.gateway === g.id && <Check size={15} className="text-accent" />}
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted">{g.help}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -484,26 +570,47 @@ export default function NewBot() {
           </div>
         )}
 
-        {/* ------------------------------------------------ permissions */}
+        {/* ------------------------------------------------ capabilities */}
         {step === 5 && (
-          <div className="space-y-4">
-            {ALL_PERMISSIONS.map((p) => {
-              const vectorRuntimeSelected = draft.executor === 'runner'
-              const disabled = p.vectorOnly && !vectorRuntimeSelected
-              return (
-                <div key={p.key} className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-medium">{p.label}</div>
-                    <div className="text-xs text-muted">{p.help}</div>
-                  </div>
-                  <Toggle
-                    checked={draft.permissions[p.key] && !disabled}
-                    disabled={disabled}
-                    onChange={(v) => patch({ permissions: { ...draft.permissions, [p.key]: v } })}
-                  />
+          <div className="space-y-5">
+            <p className="text-sm text-muted">
+              Capabilities the node requests. They land in its <span className="font-mono text-xs">bot.yaml</span> and are
+              enforced by the runtime — a bot cannot exceed them.
+            </p>
+            {CAP_GROUPS.map((g) => (
+              <div key={g.group}>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">{g.group}</h3>
+                <div className="space-y-3">
+                  {g.caps.map((c) => {
+                    const disabled = !!c.unavailable
+                    const checked = c.keys.length > 0 && c.keys.every((k) => draft.permissions[k]) && !disabled
+                    return (
+                      <div key={c.name} className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-medium">
+                            {c.label}{' '}
+                            <span className="ml-1 rounded bg-panel2 px-1.5 py-0.5 font-mono text-[10px] text-muted">{c.name}</span>
+                          </div>
+                          <div className="text-xs text-muted">
+                            {c.help}
+                            {disabled && <span className="text-warn"> — {c.unavailable}</span>}
+                          </div>
+                        </div>
+                        <Toggle
+                          checked={checked}
+                          disabled={disabled}
+                          onChange={(v) => {
+                            const next = { ...draft.permissions }
+                            for (const k of c.keys) next[k] = v
+                            patch({ permissions: next })
+                          }}
+                        />
+                      </div>
+                    )
+                  })}
                 </div>
-              )
-            })}
+              </div>
+            ))}
           </div>
         )}
 
@@ -545,14 +652,50 @@ export default function NewBot() {
           <div>
             <div className="mb-4 grid gap-3 sm:grid-cols-2">
               <div className="rounded-lg border border-border bg-bg p-3">
-                <div className="text-xs uppercase tracking-wide text-muted">Bot</div>
+                <div className="text-xs uppercase tracking-wide text-muted">Node</div>
                 <div className="mt-1 font-semibold">{draft.name}</div>
-                <div className="text-xs text-muted">{template.name}</div>
+                <div className="text-xs text-muted">
+                  {template.name} · {draft.executor}
+                  {draft.executor === 'cloudflare' && draft.gateway !== 'private' && ` · gateway: ${draft.gateway}`}
+                </div>
               </div>
               <div className="rounded-lg border border-border bg-bg p-3">
                 <div className="text-xs uppercase tracking-wide text-muted">Identity</div>
                 <div className="mt-1 break-all font-mono text-xs text-accent">{draft.identity?.npub}</div>
               </div>
+            </div>
+
+            <div className="mb-4 rounded-lg border border-border bg-bg p-3">
+              <div className="mb-2 text-xs uppercase tracking-wide text-muted">This node requests</div>
+              <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                {capabilityReview(draft.permissions).map((c) => (
+                  <div key={c.label} className="flex items-center gap-2 text-xs">
+                    {c.granted ? <Check size={13} className="shrink-0 text-accent" /> : <X size={13} className="shrink-0 text-muted/50" />}
+                    <span className={c.granted ? 'text-text' : 'text-muted/60'}>{c.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-4 grid gap-3 sm:grid-cols-2">
+              <Field label="Storage quota (MB)" help="Logical quota enforced by Botstr — set against your plan's real limits.">
+                <Input
+                  type="number"
+                  min={1}
+                  value={String(draft.resources.storageMB)}
+                  onChange={(e) => patch({ resources: { ...draft.resources, storageMB: Math.max(1, Number(e.target.value) || 1) } })}
+                />
+              </Field>
+              <Field label="Max publishes / minute" help="Sliding-window rate limit. Anti-abuse, enforced by the core.">
+                <Input
+                  type="number"
+                  min={1}
+                  value={String(draft.resources.maxEventsPerMinute)}
+                  onChange={(e) =>
+                    patch({ resources: { ...draft.resources, maxEventsPerMinute: Math.max(1, Number(e.target.value) || 1) } })
+                  }
+                />
+              </Field>
             </div>
             <div className="text-xs uppercase tracking-wide text-muted">bot.yaml</div>
             <pre className="mt-2 max-h-72 overflow-auto rounded-lg border border-border bg-bg p-4 font-mono text-xs leading-5 text-text/80">

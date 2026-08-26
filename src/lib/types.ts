@@ -1,6 +1,8 @@
 /** Botstr core types — shared by the dashboard, the browser runtime and the Cloudflare runtime. */
 
+/** WHAT runs the bot (protocol engine). */
 export type RuntimeType = 'nostr' | 'vector' | 'concord'
+/** WHERE the bot runs (deployment provider). */
 export type ExecutorType = 'browser' | 'cloudflare' | 'runner'
 
 export type BotStatus =
@@ -12,14 +14,38 @@ export type BotStatus =
   | 'crashed'
   | 'updating'
 
+/** Capability permissions — the manifest is the authority. */
 export interface BotPermissions {
+  /** messaging.dm — receive and answer encrypted DMs */
   receiveMessages: boolean
   sendMessages: boolean
+  /** messaging.public — watch and answer public mentions */
   publicMentions: boolean
+  /** nostr.publish — post public kind-1 notes */
   publishPublic: boolean
+  /** nostr.reactions (vector runtime) */
   reactions: boolean
+  /** storage.files — object storage */
   files: boolean
+  /** moderation.ban */
   moderation: boolean
+  /** network.outbound_http — guarded fetch */
+  outboundHttp: boolean
+}
+
+export type GatewayMode = 'private' | 'gateway' | 'public'
+
+/** Logical resource quotas — enforced by Botstr, independent of provider limits. */
+export interface BotResources {
+  storageMB: number
+  maxEventsPerMinute: number
+  maxRelays: number
+}
+
+export const DEFAULT_RESOURCES: BotResources = {
+  storageMB: 25,
+  maxEventsPerMinute: 30,
+  maxRelays: 12,
 }
 
 export interface EnvVarSpec {
@@ -30,7 +56,7 @@ export interface EnvVarSpec {
   default?: string
 }
 
-/** A deployed bot. Private key material is NEVER stored here — see vault.ts. */
+/** A deployed bot node. Private key material is NEVER stored here — see vault.ts. */
 export interface BotRecord {
   id: string
   name: string
@@ -44,6 +70,9 @@ export interface BotRecord {
   relays: string[]
   triggers: string[]
   permissions: BotPermissions
+  /** inbound relay gateway mode (cloudflare executor) */
+  gateway: GatewayMode
+  resources: BotResources
   /** non-secret environment values only */
   env: Record<string, string>
   /** names of secret env vars; their values live in the vault */
@@ -73,6 +102,8 @@ export interface BotLiveState {
   /** cloud executor reports node storage */
   storageUsedBytes?: number
   storageQuotaMB?: number
+  /** inbound relay URL when the gateway is enabled */
+  relayUrl?: string
 }
 
 export interface Capabilities {
@@ -87,6 +118,8 @@ export interface Capabilities {
   tor: boolean
   scheduling: boolean
   alwaysOn: boolean
+  /** inbound per-node relay gateway */
+  gateway: boolean
 }
 
 export interface RuntimeDescriptor {
@@ -118,6 +151,13 @@ export function formatUptime(startedAt: number, now: number): string {
   if (h > 0) return `${h}h ${m}m`
   if (m > 0) return `${m}m ${s}s`
   return `${s}s`
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`
+  return `${(bytes / 1073741824).toFixed(2)} GB`
 }
 
 export function uid(): string {

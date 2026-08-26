@@ -39,11 +39,11 @@ export default function App() {
                 cn('rounded-lg px-3 py-1.5 text-sm', isActive ? 'text-text' : 'text-muted hover:text-text')
               }
             >
-              My Bots
+              Bot Nodes
             </NavLink>
             <Link to="/new">
               <span className="ml-1 inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-black hover:bg-accent-dim">
-                <Plus size={15} /> Deploy Bot
+                <Plus size={15} /> Deploy Node
               </span>
             </Link>
             <a

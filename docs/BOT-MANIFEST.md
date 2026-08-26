@@ -25,14 +25,28 @@ runtime:
 identity:
   mode: generate                 # generate | import
 
-permissions:                     # all default false unless listed
-  receive_messages: true
-  send_messages: true
-  public_mentions: false
-  publish_public: false
-  reactions: false               # vector runtime
-  files: false                   # vector runtime
-  moderation: false
+permissions:                     # capabilities the node requests (v1.1 namespaced)
+  messaging:
+    dm: true                     # NIP-17 encrypted DMs
+    public: false                # public mentions
+    reactions: false             # vector runtime
+  nostr:
+    publish: false               # public kind-1 notes
+  storage:
+    files: false                 # node object storage
+  network:
+    outbound_http: false         # guarded fetch (AI endpoints, feeds)
+  moderation:
+    enabled: false
+  wallet:
+    zap: false                   # reserved — no runtime implements it yet
+
+gateway: private                 # private | gateway | public — see docs/BOT-NODE.md
+
+resources:                       # logical quotas, enforced by Botstr (not provider promises)
+  storage_mb: 25                 # object storage cap
+  max_events_per_minute: 30      # publish rate limit (sliding window)
+  max_relays: 12                 # cloudflare executor caps at 6 (platform limit)
 
 relays:                          # 1..12, wss:// only
   - wss://relay.damus.io
@@ -66,7 +80,18 @@ config:                          # free-form template config (validated by the t
 - `relays`: 1–12 entries, each starting `wss://`.
 - `environment[].name`: `^[A-Z][A-Z0-9_]*$`.
 - `schedule.interval_seconds`: integer ≥ 30.
+- `resources.storage_mb`: 1–10240; `max_events_per_minute`: 1–600.
 - Unknown `apiVersion`/`kind` are rejected outright — parsers must fail closed.
+- **Legacy v1 flat permission keys** (`receive_messages`, `publish_public`, …)
+  are still accepted and normalized to the namespaced form.
+
+## Capabilities, not flags
+
+The wizard's review step renders the parsed capabilities as a
+"THIS NODE REQUESTS" list. The runtime enforces them: `node.fetch` throws
+without `network.outbound_http`, `node.post` throws without `nostr.publish`,
+`node.files` throws without `storage.files`, and publishes are rate-limited by
+`resources.max_events_per_minute` regardless of template code.
 
 ## Export & portability
 

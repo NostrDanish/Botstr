@@ -92,13 +92,49 @@ templates, manifest spec                  │  ├─ DO: alice-bot  ⚡   │
                                           └────────────────────────┘
 ```
 
+## The Node API
+
+Templates never name a database, bucket, or socket. They see:
+
+| Node API | What it is |
+|---|---|
+| `node.identity` | the node's npub/pubkey |
+| `node.state` | durable key-value store (survives restarts) |
+| `node.memory` | semantic memory: `remember/recall/forget` + per-chat `history` — the bot owns its memory, not the AI provider |
+| `node.files` | object storage, quota-enforced (`resources.storage_mb`) |
+| `node.events` | normalized event stream (`message · mention · connection · lifecycle · schedule · publish · error`) |
+| `node.schedule` | `every(seconds, fn)` recurring jobs |
+| `node.log` | structured logs → dashboard |
+| `node.reply / sendDM / post / search` | outbound Nostr actions, rate-limited (`resources.max_events_per_minute`) |
+| `node.fetch` | outbound HTTP, only with the `network.outbound_http` capability |
+
+Same API in the browser worker, the Durable Object, and (via IPC) the future
+Rust runner. Templates are written once.
+
+## The gateway: every node can be its own relay
+
+Modes (chosen at deploy, changeable later):
+
+| Mode | Endpoint | Accepts | Serves |
+|---|---|---|---|
+| `private` (default) | closed | — | — |
+| `gateway` | `wss://<host>/nodes/<id>/relay` | events authored by or `p`-tagged to the bot (its mailbox) | the node's stored events |
+| `public` | same | any valid event, per-connection rate limit | the node's stored events |
+
+NIP-11 relay info is served at the same URL
+(`Accept: application/nostr+json`), and `GET /nodes/<id>` returns the node's
+discovery document (name, npub, status, capabilities, software) — the seed of
+a future Botstr registry.
+
+The gateway is a NIP-01 subset on purpose: REQ/EVENT/CLOSE, EOSE, OK, NOTICE,
+signature verification, per-connection rate limiting, ring-buffered event
+store. It is the node's front door, not a general-purpose relay — nosflare
+remains the reference for full relay behavior.
+
 ## Roadmap notes
 
-- **Inbound gateway**: today a node's gateway is its outbound relay pool. A
-  true per-node *inbound* relay (nosflare-style, one WS endpoint per bot) is
-  the obvious evolution — the SIP-Booster codebase is the reference — but it
-  belongs behind a template that needs it.
-- **Files**: the cloud executor exposes a per-node file API
-  (`/api/bots/:id/files/*`, R2-backed when bound, quota-enforced). The Vector
-  runner will map its file send/receive onto this; Nostr file templates
-  (NIP-96 uploads) can use it as a cache.
+- **Replay on wake**: gateway events that arrive while a node is stopped are
+  stored; replaying them into the core on start is the next iteration.
+- **Files**: `/api/bots/:id/files/*` (R2-backed when bound, quota-enforced).
+  The Vector runner will map its file send/receive onto this; Nostr file
+  templates (NIP-96) can use it as a cache.

@@ -1,5 +1,6 @@
-import { Link } from 'react-router-dom'
-import { Bot, Play, Plus, RotateCw, Square } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Bot, Play, Plus, RotateCw, Square, Upload } from 'lucide-react'
 import { useBots, useNow } from '../lib/hooks'
 import { manager, runtimeLabel, type BotWithLive } from '../lib/runtime'
 import { getTemplate } from '../lib/templates'
@@ -56,29 +57,60 @@ function BotCard({ bot }: { bot: BotWithLive }) {
 
 export default function Home() {
   const bots = useBots()
+  const nav = useNavigate()
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [importing, setImporting] = useState(false)
+
+  const importBundle = async (file: File) => {
+    setImporting(true)
+    try {
+      const bot = await manager.importBot(await file.text(), 'browser')
+      nav(`/bot/${bot.id}`)
+    } catch (e) {
+      alert(`Import failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setImporting(false)
+    }
+  }
 
   return (
     <div>
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">My Bots</h1>
+          <h1 className="text-2xl font-bold tracking-tight">My Bot Nodes</h1>
           <p className="mt-1 max-w-xl text-sm text-muted">
-            Pick a template, generate an identity, click deploy. Bots hold their own keys and talk to real Nostr
-            relays — no servers to run, no Rust to learn.
+            Every node gets its own identity, runtime, database, storage and logs. Pick a template, deploy, and it
+            answers real Nostr traffic — your keys, your relays, your rules.
           </p>
         </div>
-        <Link to="/new">
-          <Btn variant="primary">
-            <Plus size={16} /> Deploy Bot
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) void importBundle(f)
+              e.target.value = ''
+            }}
+          />
+          <Btn onClick={() => fileRef.current?.click()} disabled={importing}>
+            <Upload size={15} /> {importing ? 'Importing…' : 'Import bundle'}
           </Btn>
-        </Link>
+          <Link to="/new">
+            <Btn variant="primary">
+              <Plus size={16} /> Deploy Bot Node
+            </Btn>
+          </Link>
+        </div>
       </div>
 
       {bots.length === 0 ? (
-        <EmptyState title="No bots yet.">
+        <EmptyState title="No bot nodes yet.">
           <Link to="/new" className="mt-4">
             <Btn variant="primary">
-              <Bot size={15} className="mr-1" /> Deploy your first bot
+              <Bot size={15} className="mr-1" /> Deploy your first node
             </Btn>
           </Link>
         </EmptyState>

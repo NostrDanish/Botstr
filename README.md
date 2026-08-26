@@ -1,8 +1,12 @@
 # Botstr
 
-**Deploy Nostr bots in minutes.**
+**Deploy Nostr bot nodes in minutes.**
 
 Botstr is an open-source, self-hostable deployment platform for Nostr-based bots. Pick a template, generate a dedicated bot identity, choose relays, click **Deploy** — and a real bot is live, holding its own keys and speaking real Nostr (NIP-17 encrypted DMs, public mentions, scheduled posts).
+
+A Botstr bot is a **node**: its own identity, runtime isolate, relay gateway (`wss://…/nodes/<id>/relay`), SQLite database, quota-enforced object storage, sealed secrets, memory, monitoring and logs. One click, one sovereign little piece of infrastructure.
+
+> *Cloudflare if you want easy. Docker if you want control. Local if you want simplicity. Self-host if you want sovereignty.* **Your bot. Your identity. Your data. Your infrastructure.**
 
 No Rust. No Docker. No relay administration. No fake dashboard — status, logs and events are the bot's actual runtime output.
 
@@ -28,7 +32,9 @@ Every bot-hosting platform is a company sitting between you and your users. Bots
 
 **Try it in the browser (zero setup):** open the dashboard, *Deploy Bot → Echo Bot → generate identity → deploy*. DM the bot's npub from any Nostr client that supports NIP-17 (e.g. Vector) and it answers. Bots run while the tab is open; the dashboard resumes them when you return.
 
-**Run it always-on (your Cloudflare account):** see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). `npm run build && npx wrangler deploy` — bots then run as Durable Objects with a watchdog alarm, surviving tab closes and isolate evictions.
+**Run it always-on (your Cloudflare account):** see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). `npm run build && npx wrangler deploy` — bots then run as Durable Objects with a watchdog alarm, surviving tab closes and isolate evictions. Each node can open its own relay endpoint (private/gateway/public modes).
+
+**Self-host the whole platform:** `BOTSTR_SECRET=$(openssl rand -hex 32) docker compose up -d` — see [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md). Bots migrate between Cloudflare and Docker via exportable bundles; nothing is locked in.
 
 **Develop:**
 
@@ -73,10 +79,13 @@ Full threat model: [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Docs
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — components, data flow, executors
-- [BOT-MANIFEST.md](docs/BOT-MANIFEST.md) — the `bot.yaml` v1 spec
+- [BOT-NODE.md](docs/BOT-NODE.md) — the node model: anatomy, Node API, gateway modes, verified quotas
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — components, data flow, executors, the gateway
+- [PROVIDERS.md](docs/PROVIDERS.md) — runtime ≠ provider; cloud default, self-host always
+- [BOT-MANIFEST.md](docs/BOT-MANIFEST.md) — the `bot.yaml` v1.1 spec (capabilities, resources, gateway)
 - [RUNTIME-ADAPTERS.md](docs/RUNTIME-ADAPTERS.md) — writing a runtime (Vector, Concord, …)
-- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — self-hosting on Cloudflare
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — Cloudflare deployment
+- [SELF-HOSTING.md](docs/SELF-HOSTING.md) — Docker / local / backups / migration
 - [SECURITY.md](docs/SECURITY.md) — threat model and hardening
 - [CONTRIBUTING.md](docs/CONTRIBUTING.md) — adding templates, hacking on Botstr
 

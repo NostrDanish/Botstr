@@ -52,6 +52,49 @@ can never contaminate another's state. The full model — verified Cloudflare
 quotas, the per-bot-D1 upgrade path, and the "deploy to your own account"
 distribution story — lives in [BOT-NODE.md](BOT-NODE.md).
 
+### The Node API
+
+Templates only ever see the Node API (`src/lib/core.ts`) — the same surface on
+every provider:
+
+```
+node.identity      npub/pubkey
+node.state         durable KV
+node.memory        remember/recall + per-chat history
+node.files         quota-enforced object storage
+node.events        normalized event stream
+node.schedule      every(seconds, fn)
+node.log           structured logs
+node.reply · node.sendDM · node.post · node.search
+node.fetch         guarded by the network.outbound_http capability
+```
+
+This is the abstraction that makes "build once, deploy anywhere" true.
+
+### The inbound gateway
+
+Each node can expose its own relay endpoint — `wss://<host>/nodes/<id>/relay`
+— implemented inside the node's Durable Object (`src/lib/gateway.ts`, a
+deliberate NIP-01 subset: REQ/EVENT/CLOSE/EOSE/OK/NOTICE). Three modes:
+
+- **private** (default) — endpoint closed; the node only dials out.
+- **gateway** — the node's mailbox: serves the node's stored events, accepts
+  only events authored by or addressed to the bot (giftwraps land directly in
+  the running core via `handle.inject`).
+- **public** — an open, rate-limited relay feed (operator opt-in).
+
+The bot's own publishes flow into the gateway store, so subscribers see the
+node's output without the bot republishing to five relays.
+
+## Runtime ≠ Provider
+
+**Runtime** = WHAT runs the bot (`nostr` today; `vector`, `concord` next).
+**Provider** = WHERE the node runs (`browser`, `cloudflare`, `docker`,
+`runner`). The manifest describes requirements, never infrastructure. The
+architectural test for every feature: *"Can this work without Cloudflare?"*
+If yes, it goes in `src/lib/`; if no, it goes behind an adapter. See
+[PROVIDERS.md](PROVIDERS.md).
+
 ## The BotRuntime contract
 
 ```ts

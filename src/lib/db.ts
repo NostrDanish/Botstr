@@ -7,13 +7,14 @@ const EVENT_CAP = 300
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
+    const req = indexedDB.open(DB_NAME, 2)
     req.onupgradeneeded = () => {
       const db = req.result
-      db.createObjectStore('bots', { keyPath: 'id' })
-      db.createObjectStore('logs') // key: botId → { entries: LogEntry[] }
-      db.createObjectStore('events') // key: botId → { entries: BotEventEntry[] }
-      db.createObjectStore('state') // key: botId → Record<string, unknown>
+      if (!db.objectStoreNames.contains('bots')) db.createObjectStore('bots', { keyPath: 'id' })
+      if (!db.objectStoreNames.contains('logs')) db.createObjectStore('logs') // key: botId → { entries: LogEntry[] }
+      if (!db.objectStoreNames.contains('events')) db.createObjectStore('events') // key: botId → { entries: BotEventEntry[] }
+      if (!db.objectStoreNames.contains('state')) db.createObjectStore('state') // key: botId → Record<string, unknown>
+      if (!db.objectStoreNames.contains('files')) db.createObjectStore('files') // key: `${botId}:${name}` → { data, contentType, size }
     }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
@@ -94,4 +95,41 @@ export async function putState(botId: string, state: Record<string, unknown>): P
 
 export async function deleteState(botId: string): Promise<void> {
   await tx('state', 'readwrite', (s) => s.delete(botId))
+}
+
+// ---------------------------------------------------------------- node files
+export interface StoredFile {
+  data: ArrayBuffer
+  contentType: string
+  size: number
+}
+
+export async function putFile(botId: string, name: string, data: ArrayBuffer, contentType: string): Promise<void> {
+  await tx('files', 'readwrite', (s) => s.put({ data, contentType, size: data.byteLength } satisfies StoredFile, `${botId}:${name}`))
+}
+
+export async function getFile(botId: string, name: string): Promise<StoredFile | null> {
+  return ((await tx('files', 'readonly', (s) => s.get(`${botId}:${name}`))) as StoredFile) ?? null
+}
+
+export async function deleteFile(botId: string, name: string): Promise<void> {
+  await tx('files', 'readwrite', (s) => s.delete(`${botId}:${name}`))
+}
+
+export async function listFiles(botId: string): Promise<{ name: string; size: number }[]> {
+  const keys = (await tx('files', 'readonly', (s) => s.getAllKeys())) as string[]
+  const prefix = `${botId}:`
+  const out: { name: string; size: number }[] = []
+  for (const k of keys) {
+    if (k.startsWith(prefix)) {
+      const f = await getFile(botId, k.slice(prefix.length))
+      if (f) out.push({ name: k.slice(prefix.length), size: f.size })
+    }
+  }
+  return out
+}
+
+export async function filesUsedBytes(botId: string): Promise<number> {
+  const files = await listFiles(botId)
+  return files.reduce((sum, f) => sum + f.size, 0)
 }

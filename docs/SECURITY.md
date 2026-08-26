@@ -60,6 +60,22 @@ we do about it — including what we deliberately **don't** do yet.
   single-tenant deployment, but anyone with the URL could drive it. Put
   Cloudflare Access (or any SSO) in front, or add `ADMIN_TOKEN` checks before
   exposing it. This is called out in DEPLOYMENT.md because it matters.
+  **This applies double to `POST /api/bots/:id/export`** — it returns the
+  node's sealed material (nsec + env secrets) to the caller. It exists for
+  portability; without deployment auth it is a key-exfiltration endpoint.
+- **Gateway abuse** — the per-node relay verifies signatures, enforces
+  per-connection publish rate limits, ring-buffers storage (2,000 events), and
+  in `gateway` mode rejects events not addressed to the node. `public` mode is
+  operator opt-in and shares the same rate limits. The node-level
+  `resources.max_events_per_minute` quota caps the bot's own publishes, so a
+  compromised or buggy template can't spam relays at full speed.
+- **Identity rotation** destroys the old key (by replacement of the sealed
+  record). Rotation of a cloud node happens *inside* the Durable Object — the
+  new key never crosses the wire. There is deliberately no "download both
+  keys" transition window; followers must be pointed at the new npub.
+- **Logical quotas are Botstr-enforced, not provider guarantees** — storage
+  MB, publish rate, relay count. Provider-level limits (Cloudflare plan caps)
+  sit underneath; see docs/BOT-NODE.md for the verified numbers.
 - **DoS via inbound DMs** — per-template responsibility today (dedupe in core
   caps memory). Rate limiting per sender is on the template roadmap.
 - **Dependency risk** — few, pinned deps (`nostr-tools`, `zod`, `js-yaml`,
