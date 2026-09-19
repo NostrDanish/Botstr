@@ -38,7 +38,7 @@ jobs:
 
       - name: Install dependencies and build
         run: |
-          npm install
+          npm install --legacy-peer-deps
           npm run build
           cp dist/index.html dist/404.html
         env:
