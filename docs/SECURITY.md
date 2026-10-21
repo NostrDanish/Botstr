@@ -21,6 +21,10 @@ we do about it — including what we deliberately **don't** do yet.
   - browser executor: non-extractable device key in IndexedDB (`vault.ts`);
   - cloudflare executor: sealed with `BOTSTR_SECRET` before touching DO
     storage; the API **refuses to run** if `BOTSTR_SECRET` is unset.
+- The cloud admin API (`/api/bots*`: enumeration, lifecycle, logs, files,
+  nsec/secret export) requires `Authorization: Bearer <BOTSTR_OWNER_TOKEN>`
+  and **fails closed (503)** while the token is unset — an internet-reachable
+  deployment never silently exposes bot keys.
 - Secrets never appear in: logs, URLs, `bot.yaml`, the bot record, analytics
   (there are none), or error messages (relay errors are passed through, and
   relay `OK` messages don't contain key material by protocol).
@@ -56,13 +60,13 @@ we do about it — including what we deliberately **don't** do yet.
 - **Browser vault is device-bound** — malware with device access wins. For
   high-value bots, use the cloudflare executor (`BOTSTR_SECRET` in Workers
   secrets) or the runner. A passphrase mode (PBKDF2) is planned.
-- **Cloudflare API auth** — the MVP API is unauthenticated: it is *your*
-  single-tenant deployment, but anyone with the URL could drive it. Put
-  Cloudflare Access (or any SSO) in front, or add `ADMIN_TOKEN` checks before
-  exposing it. This is called out in DEPLOYMENT.md because it matters.
-  **This applies double to `POST /api/bots/:id/export`** — it returns the
-  node's sealed material (nsec + env secrets) to the caller. It exists for
-  portability; without deployment auth it is a key-exfiltration endpoint.
+- **Cloudflare API auth** — the `/api/bots*` admin API requires
+  `Authorization: Bearer <BOTSTR_OWNER_TOKEN>` and **fails closed (503)**
+  while the token is unset, so a fresh deployment is never silently open.
+  For defense in depth you can still put Cloudflare Access (or any SSO) in
+  front. **This applies double to `POST /api/bots/:id/export`** — it returns
+  the node's sealed material (nsec + env secrets) to the caller. It exists for
+  portability and is strictly owner-only.
 - **Gateway abuse** — the per-node relay verifies signatures, enforces
   per-connection publish rate limits, ring-buffers storage (2,000 events), and
   in `gateway` mode rejects events not addressed to the node. `public` mode is

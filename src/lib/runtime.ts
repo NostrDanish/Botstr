@@ -151,6 +151,34 @@ interface FileReqMsg {
 // ---------------------------------------------------------------------------
 // cloudflare adapter — talks to the Botstr API (worker.ts) over HTTP
 
+/**
+ * Owner token for the /api/bots* admin API (must match BOTSTR_OWNER_TOKEN on
+ * the worker). Stored in this browser's localStorage; set it from the browser
+ * console with `setOwnerToken('…')` (exported below) or:
+ *   localStorage.setItem('botstr:ownerToken', '<token>')
+ */
+export function getOwnerToken(): string | null {
+  try {
+    return localStorage.getItem('botstr:ownerToken')
+  } catch {
+    return null
+  }
+}
+
+export function setOwnerToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem('botstr:ownerToken', token)
+    else localStorage.removeItem('botstr:ownerToken')
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function ownerHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const token = getOwnerToken()
+  return token ? { ...extra, authorization: `Bearer ${token}` } : extra
+}
+
 class CloudflareAdapter implements Adapter {
   executor: ExecutorType = 'cloudflare'
   private states = new Map<string, BotLiveState>()
@@ -170,7 +198,7 @@ class CloudflareAdapter implements Adapter {
   async provision(bot: BotRecord, nsecHex: string, secrets: Record<string, string>) {
     const res = await fetch('./api/bots', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: ownerHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({ record: bot, nsecHex, secrets }),
     })
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
@@ -180,7 +208,7 @@ class CloudflareAdapter implements Adapter {
   async update(bot: BotRecord) {
     const res = await fetch(`./api/bots/${bot.id}`, {
       method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
+      headers: ownerHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify(bot),
     })
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
@@ -188,21 +216,21 @@ class CloudflareAdapter implements Adapter {
 
   /** Rotate identity INSIDE the node — the new key never leaves it. */
   async rotate(botId: string): Promise<{ pubkey: string }> {
-    const res = await fetch(`./api/bots/${botId}/rotate`, { method: 'POST' })
+    const res = await fetch(`./api/bots/${botId}/rotate`, { method: 'POST', headers: ownerHeaders() })
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
     return (await res.json()) as { pubkey: string }
   }
 
   /** Owner export of the node's sealed material, over TLS, from your own deployment. */
   async exportSecrets(botId: string): Promise<{ nsecHex: string; secrets: Record<string, string>; state: Record<string, unknown> }> {
-    const res = await fetch(`./api/bots/${botId}/export`, { method: 'POST' })
+    const res = await fetch(`./api/bots/${botId}/export`, { method: 'POST', headers: ownerHeaders() })
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
     return (await res.json()) as { nsecHex: string; secrets: Record<string, string>; state: Record<string, unknown> }
   }
 
   /** Merge bots that were created on another device into the local list. */
   async fetchRemote(): Promise<BotRecord[]> {
-    const res = await fetch('./api/bots')
+    const res = await fetch('./api/bots', { headers: ownerHeaders() })
     if (!res.ok) return []
     return (await res.json()) as BotRecord[]
   }
@@ -216,14 +244,14 @@ class CloudflareAdapter implements Adapter {
   }
 
   async remove(botId: string) {
-    await fetch(`./api/bots/${botId}`, { method: 'DELETE' })
+    await fetch(`./api/bots/${botId}`, { method: 'DELETE', headers: ownerHeaders() })
     this.states.delete(botId)
   }
 
   private async send(botId: string, action: string, bot?: BotRecord) {
     const res = await fetch(`./api/bots/${botId}/${action}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: ownerHeaders({ 'content-type': 'application/json' }),
       body: bot ? JSON.stringify(bot) : undefined,
     })
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
@@ -240,7 +268,7 @@ class CloudflareAdapter implements Adapter {
 
   async pollState(botId: string): Promise<BotLiveState | undefined> {
     try {
-      const res = await fetch(`./api/bots/${botId}`)
+      const res = await fetch(`./api/bots/${botId}`, { headers: ownerHeaders() })
       if (!res.ok) return undefined
       const data = (await res.json()) as { live?: BotLiveState; storage?: { usedBytes: number; quotaMB: number } }
       if (data.live) {

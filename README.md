@@ -34,7 +34,16 @@ Every bot-hosting platform is a company sitting between you and your users. Bots
 
 **Run it always-on (your Cloudflare account):** see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). `npm run build && npx wrangler deploy` — bots then run as Durable Objects with a watchdog alarm, surviving tab closes and isolate evictions. Each node can open its own relay endpoint (private/gateway/public modes).
 
-**Self-host the whole platform:** `BOTSTR_SECRET=$(openssl rand -hex 32) docker compose up -d` — see [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md). Bots migrate between Cloudflare and Docker via exportable bundles; nothing is locked in.
+Required secrets for a Cloudflare deployment:
+
+| Secret | Purpose |
+|---|---|
+| `BOTSTR_SECRET` | Encrypts every bot's private key at rest inside its Durable Object. `npx wrangler secret put BOTSTR_SECRET` |
+| `BOTSTR_OWNER_TOKEN` | Bearer token guarding the `/api/bots*` admin API (bot list, lifecycle, logs, files, key export). **The admin API fails closed (503) while unset.** `npx wrangler secret put BOTSTR_OWNER_TOKEN` — generate with `openssl rand -hex 32` |
+
+Call admin routes with `Authorization: Bearer <BOTSTR_OWNER_TOKEN>`. To use the dashboard against your own deployment, store the token in your browser: `localStorage.setItem('botstr:ownerToken', '<token>')`.
+
+**Self-host the whole platform:** `BOTSTR_SECRET=$(openssl rand -hex 32) BOTSTR_OWNER_TOKEN=$(openssl rand -hex 32) docker compose up -d` — see [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md). Bots migrate between Cloudflare and Docker via exportable bundles; nothing is locked in.
 
 **Develop:**
 
@@ -72,6 +81,7 @@ Botstr is runtime-agnostic; the dashboard drives adapters behind one `BotRuntime
 
 - Bots get **their own** identities; your personal key is never used.
 - Secret keys are AES-256-GCM encrypted at rest (device key in the browser vault; `BOTSTR_SECRET` in the cloud runtime) and never appear in logs, URLs, manifests, or the bot record.
+- The cloud admin API (`/api/bots*` — enumeration, lifecycle, logs, files, nsec/secret export) requires `Authorization: Bearer <BOTSTR_OWNER_TOKEN>` and fails closed (503) when the token is not configured. Public surface: `/api/health` and the per-node discovery/relay endpoints, which expose no secrets.
 - Templates are built-in, reviewed code — Botstr MVP never executes arbitrary uploaded code.
 - Per-bot isolation: a Web Worker per bot in the browser, a Durable Object isolate per bot in the cloud.
 

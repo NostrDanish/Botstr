@@ -15,4 +15,5 @@ EXPOSE 8787
 VOLUME ["/data"]
 
 # BOTSTR_SECRET encrypts every bot key at rest — required, like in production.
-CMD ["sh", "-c", "npx wrangler d1 migrations apply botstr --local --persist-to /data || true; printf 'BOTSTR_SECRET=%s\\n' \"$BOTSTR_SECRET\" > .dev.vars; exec npx wrangler dev --local --ip 0.0.0.0 --port 8787 --persist-to /data"]
+# BOTSTR_OWNER_TOKEN guards the /api/bots* admin API — it fails closed (503) without it.
+CMD ["sh", "-c", "npx wrangler d1 migrations apply botstr --local --persist-to /data || true; printf 'BOTSTR_SECRET=%s\\nBOTSTR_OWNER_TOKEN=%s\\n' \"$BOTSTR_SECRET\" \"$BOTSTR_OWNER_TOKEN\" > .dev.vars; exec npx wrangler dev --local --ip 0.0.0.0 --port 8787 --persist-to /data"]
