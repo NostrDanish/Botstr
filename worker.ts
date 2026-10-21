@@ -341,3 +341,407 @@ export default {
     return err(405, 'method not allowed')
   },
 }
+
+// ---------------------------------------------------------------------------
+// BotRunner — one Durable Object per bot
+
+const LOG_CAP = 600
+const EVENT_CAP = 300
+const WATCHDOG_MS = 30_000
+
+export class BotRunner {
+  private handle: BotHandle | null = null
+  private logBuf: LogEntry[] = []
+  private eventBuf: { ts: number; type: string; summary: string }[] = []
+  private flushTimer: ReturnType<typeof setTimeout> | null = null
+  private gatewayInst: RelayGateway | null = null
+  private mode: GatewayMode = 'private'
+
+  constructor(
+    private state: DurableObjectState,
+    private env: Env,
+  ) {}
+
+  /** The node's inbound relay. Lazily built; serves stored events even while the bot is stopped. */
+  private gatewayPubkey = ''
+  private async gateway(): Promise<RelayGateway> {
+    const config = await this.state.storage.get<BotRecord | null>('config')
+    this.mode = config?.gateway ?? 'private'
+    const pk = config?.pubkey ?? ''
+    if (!this.gatewayInst || this.gatewayPubkey !== pk) {
+      this.gatewayPubkey = pk
+      this.gatewayInst = new RelayGateway({
+        botPubkey: pk,
+        getMode: () => this.mode,
+        store: {
+          load: async () => (await this.state.storage.get<NostrEvent[]>('relay:events')) ?? [],
+          append: async (ev) => {
+            const events = (await this.state.storage.get<NostrEvent[]>('relay:events')) ?? []
+            if (events.some((e) => e.id === ev.id)) return
+            events.push(ev)
+            events.sort((a, b) => b.created_at - a.created_at)
+            await this.state.storage.put('relay:events', events.slice(0, 2000))
+          },
+        },
+        hooks: {
+          inject: (ev) => this.handle?.inject(ev),
+          log: (level, msg) => void this.pushLog(level, msg),
+        },
+      })
+    }
+    return this.gatewayInst
+  }
+
+  /** Cloudflare hibernation hooks — gateway sockets live here. */
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const gw = await this.gateway()
+    await gw.message(ws, message)
+  }
+
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    const gw = await this.gateway()
+    gw.detach(ws)
+  }
+
+  private async pushLog(level: LogEntry['level'], msg: string) {
+    this.logBuf.push({ ts: Date.now(), level, msg })
+    this.scheduleFlush()
+  }
+
+  private async pushEvent(type: string, summary: string) {
+    this.eventBuf.push({ ts: Date.now(), type, summary })
+    this.scheduleFlush()
+  }
+
+  private scheduleFlush() {
+    if (this.flushTimer) return
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null
+      void (async () => {
+        if (this.logBuf.length) {
+          const logs = ((await this.state.storage.get<LogEntry[]>('logs')) ?? []).concat(this.logBuf).slice(-LOG_CAP)
+          this.logBuf = []
+          await this.state.storage.put('logs', logs)
+        }
+        if (this.eventBuf.length) {
+          const events = ((await this.state.storage.get<typeof this.eventBuf>('events')) ?? [])
+            .concat(this.eventBuf)
+            .slice(-EVENT_CAP)
+          this.eventBuf = []
+          await this.state.storage.put('events', events)
+        }
+      })()
+    }, 250)
+  }
+
+  private async setLive(live: BotLiveState, botId: string) {
+    await this.state.storage.put('live', live)
+    await this.env.DB.prepare('UPDATE bots SET last_status = ? WHERE id = ?').bind(live.status, botId).run()
+  }
+
+  private async start(bot: BotRecord): Promise<void> {
+    if (this.handle) await this.handle.stop()
+    const template = getTemplate(bot.template)
+    if (!template) throw new Error(`unknown template "${bot.template}"`)
+    const sealedKey = await this.state.storage.get<string>('nsec')
+    if (!sealedKey || !this.env.BOTSTR_SECRET) throw new Error('bot identity missing — provision first')
+    const nsecHex = await openKey(this.env.BOTSTR_SECRET, sealedKey)
+    const sealedSecrets = (await this.state.storage.get<Record<string, string>>('secrets')) ?? {}
+    const secrets: Record<string, string> = {}
+    for (const [k, v] of Object.entries(sealedSecrets)) secrets[k] = await openKey(this.env.BOTSTR_SECRET, v)
+    const persistedState = (await this.state.storage.get<Record<string, unknown>>('botState')) ?? {}
+
+    await this.setLive({ status: 'starting' }, bot.id)
+    this.handle = await runBot(bot, secrets, template.module, {
+      log: (level, msg) => void this.pushLog(level, msg),
+      status: (status, detail) => {
+        void this.setLive({ status, detail, startedAt: status === 'starting' ? Date.now() : undefined }, bot.id)
+      },
+      event: (type, summary) => void this.pushEvent(type, summary),
+      persistState: (s) => void this.state.storage.put('botState', s),
+      setTimer: (fn, ms) => setInterval(fn, ms),
+      clearTimer: (t) => clearInterval(t as number),
+      fileOp: this.fileOp,
+      // the node's own publishes flow into its relay gateway
+      onPublish: (ev) => void this.gateway().then((gw) => gw.ingestFromBot(ev)),
+    }, {
+      privkey: hexToBytes(nsecHex),
+      persistedState,
+    })
+    await this.state.storage.put('config', bot)
+    await this.state.storage.setAlarm(Date.now() + WATCHDOG_MS)
+  }
+
+  /** Watchdog: if the isolate was evicted while the bot should be running, revive it. */
+  async alarm(): Promise<void> {
+    const config = await this.state.storage.get<BotRecord>('config')
+    const live = await this.state.storage.get<BotLiveState>('live')
+    if (config && live && (live.status === 'running' || live.status === 'starting')) {
+      if (!this.handle) {
+        await this.pushLog('warn', 'watchdog: isolate was evicted — reviving bot')
+        try {
+          await this.start(config)
+        } catch (e) {
+          await this.pushLog('error', `watchdog revive failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      await this.state.storage.setAlarm(Date.now() + WATCHDOG_MS)
+    }
+  }
+
+  // ---------------------------------------------------------- node storage
+  // Per-node file store. R2-backed when the BOT_STORAGE bucket is bound,
+  // otherwise DO storage (small files only). Quota is a LOGICAL limit —
+  // the operator sets it against their plan's real numbers (docs/BOT-NODE.md).
+
+  private async quotaMB(): Promise<number> {
+    const config = await this.state.storage.get<BotRecord | null>('config')
+    return Number(config?.resources?.storageMB ?? 25)
+  }
+
+  private async fileSizes(): Promise<Record<string, number>> {
+    return (await this.state.storage.get<Record<string, number>>('fileSizes')) ?? {}
+  }
+
+  private async usedBytes(): Promise<number> {
+    return (await this.state.storage.get<number>('storageUsed')) ?? 0
+  }
+
+  private async putFile(name: string, bytes: ArrayBuffer, ct: string): Promise<{ size: number }> {
+    const botId = (await this.state.storage.get<string>('botId')) ?? 'unprovisioned'
+    const sizes = await this.fileSizes()
+    const used = (await this.usedBytes()) - (sizes[name] ?? 0)
+    const quota = (await this.quotaMB()) * 1024 * 1024
+    if (used + bytes.byteLength > quota) throw new Error(`node storage quota exceeded (${await this.quotaMB()} MB)`)
+    if (!this.env.BOT_STORAGE && bytes.byteLength > 1_500_000)
+      throw new Error('bind an R2 bucket (BOT_STORAGE) for files over 1.5 MB')
+    if (this.env.BOT_STORAGE) {
+      await this.env.BOT_STORAGE.put(`bots/${botId}/${name}`, bytes, { httpMetadata: { contentType: ct } })
+    } else {
+      await this.state.storage.put(`file:${name}`, bytes)
+    }
+    sizes[name] = bytes.byteLength
+    await this.state.storage.put('fileSizes', sizes)
+    await this.state.storage.put('storageUsed', used + bytes.byteLength)
+    return { size: bytes.byteLength }
+  }
+
+  private async getFile(name: string): Promise<{ data: ArrayBuffer; ct: string } | null> {
+    const botId = (await this.state.storage.get<string>('botId')) ?? 'unprovisioned'
+    if (this.env.BOT_STORAGE) {
+      const obj = await this.env.BOT_STORAGE.get(`bots/${botId}/${name}`)
+      if (!obj) return null
+      return { data: await obj.arrayBuffer(), ct: obj.httpMetadata?.contentType ?? 'application/octet-stream' }
+    }
+    const data = await this.state.storage.get<ArrayBuffer>(`file:${name}`)
+    return data ? { data, ct: 'application/octet-stream' } : null
+  }
+
+  private async deleteFile(name: string): Promise<boolean> {
+    const botId = (await this.state.storage.get<string>('botId')) ?? 'unprovisioned'
+    const sizes = await this.fileSizes()
+    if (!(name in sizes)) return false
+    if (this.env.BOT_STORAGE) await this.env.BOT_STORAGE.delete(`bots/${botId}/${name}`)
+    else await this.state.storage.delete(`file:${name}`)
+    const used = (await this.usedBytes()) - sizes[name]
+    delete sizes[name]
+    await this.state.storage.put('fileSizes', sizes)
+    await this.state.storage.put('storageUsed', Math.max(0, used))
+    return true
+  }
+
+  /** node.files backing for the shared core (templates call this via ctx). */
+  private fileOp = async (op: { op: string; name: string; data?: Uint8Array; contentType?: string }): Promise<unknown> => {
+    if (op.op === 'put') {
+      const buf = op.data ? (op.data.slice().buffer as ArrayBuffer) : new ArrayBuffer(0)
+      return this.putFile(op.name, buf, op.contentType ?? 'application/octet-stream')
+    }
+    if (op.op === 'get') {
+      const f = await this.getFile(op.name)
+      return f ? new Uint8Array(f.data) : null
+    }
+    if (op.op === 'list') {
+      const sizes = await this.fileSizes()
+      return Object.entries(sizes).map(([name, size]) => ({ name, size }))
+    }
+    if (op.op === 'delete') return this.deleteFile(op.name)
+    throw new Error('unknown file op')
+  }
+
+  private async handleFiles(request: Request, path: string): Promise<Response> {
+    const ct = request.headers.get('content-type') ?? 'application/octet-stream'
+    try {
+      if (request.method === 'PUT' && path) {
+        const r = await this.putFile(path, await request.arrayBuffer(), ct)
+        return json({ ok: true, path, size: r.size })
+      }
+      if (request.method === 'GET' && path) {
+        const f = await this.getFile(path)
+        if (!f) return err(404, 'not found')
+        return new Response(f.data, { headers: { 'content-type': f.ct } })
+      }
+      if (request.method === 'GET') {
+        const sizes = await this.fileSizes()
+        return json({
+          files: Object.entries(sizes).map(([key, size]) => ({ key, size })),
+          usedBytes: await this.usedBytes(),
+          quotaMB: await this.quotaMB(),
+        })
+      }
+      if (request.method === 'DELETE' && path) {
+        return (await this.deleteFile(path)) ? json({ ok: true }) : err(404, 'not found')
+      }
+      return err(405, 'method not allowed')
+    } catch (e) {
+      return err(413, e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+
+    // /relay — the node's inbound relay endpoint
+    if (url.pathname === '/relay') {
+      const config = await this.state.storage.get<BotRecord | null>('config')
+      this.mode = config?.gateway ?? 'private'
+      if (this.mode === 'private') return err(404, 'this node is private')
+      if (request.headers.get('Upgrade') === 'websocket') {
+        const gw = await this.gateway()
+        const pair = new WebSocketPair()
+        this.state.acceptWebSocket(pair[1])
+        gw.attach(pair[1])
+        return new Response(null, { status: 101, webSocket: pair[0] } as unknown as ResponseInit)
+      }
+      if ((request.headers.get('Accept') ?? '').includes('application/nostr+json')) {
+        return json({
+          name: config?.name ?? 'botstr node',
+          description: config?.description ?? '',
+          pubkey: config?.pubkey,
+          supported_nips: [1, 11, 17],
+          software: 'https://github.com/NostrDanish/Botstr',
+          version: config?.version ?? '1.0.0',
+        })
+      }
+      return err(400, 'websocket upgrade required')
+    }
+
+    // /rotate — generate a new identity inside the node; the old key is destroyed
+    if (url.pathname === '/rotate' && request.method === 'POST') {
+      if (!this.env.BOTSTR_SECRET) return err(500, 'BOTSTR_SECRET not set')
+      const config = await this.state.storage.get<BotRecord | null>('config')
+      if (!config) return err(400, 'node not provisioned')
+      const sk = generateSecretKey()
+      await this.state.storage.put('nsec', await sealKey(this.env.BOTSTR_SECRET, bytesToHex(sk)))
+      config.pubkey = getPublicKey(sk)
+      await this.state.storage.put('config', config)
+      await this.pushLog('warn', 'identity rotated inside the node — old key destroyed')
+      if (this.handle) {
+        await this.handle.stop()
+        this.handle = null
+        await this.start(config)
+      }
+      return json({ ok: true, pubkey: config.pubkey })
+    }
+
+    // /export — owner export of sealed material (over TLS, from your own deployment)
+    if (url.pathname === '/export' && request.method === 'POST') {
+      if (!this.env.BOTSTR_SECRET) return err(500, 'BOTSTR_SECRET not set')
+      const sealedKey = await this.state.storage.get<string>('nsec')
+      if (!sealedKey) return err(400, 'node not provisioned')
+      const sealedSecrets = (await this.state.storage.get<Record<string, string>>('secrets')) ?? {}
+      const secrets: Record<string, string> = {}
+      for (const [k, v] of Object.entries(sealedSecrets)) secrets[k] = await openKey(this.env.BOTSTR_SECRET, v)
+      return json({
+        nsecHex: await openKey(this.env.BOTSTR_SECRET, sealedKey),
+        secrets,
+        state: (await this.state.storage.get<Record<string, unknown>>('botState')) ?? {},
+      })
+    }
+
+    // /config — non-secret config updates (gateway mode, relays, template config)
+    if (url.pathname === '/config' && request.method === 'POST') {
+      const next = (await request.json()) as BotRecord
+      const prev = await this.state.storage.get<BotRecord | null>('config')
+      await this.state.storage.put('config', next)
+      this.mode = next.gateway ?? 'private'
+      if (this.handle && JSON.stringify(prev) !== JSON.stringify(next)) {
+        await this.pushLog('info', 'configuration updated — applies fully on next restart')
+      }
+      return json({ ok: true })
+    }
+
+    const fm = url.pathname.match(/^\/files(?:\/(.*))?$/)
+    if (fm) return this.handleFiles(request, fm[1] ?? '')
+
+    if (url.pathname === '/provision' && request.method === 'POST') {
+      if (!this.env.BOTSTR_SECRET) return err(500, 'BOTSTR_SECRET not set')
+      const body = (await request.json()) as {
+        nsecHex: string
+        secrets: Record<string, string>
+        botId?: string
+        record?: BotRecord
+      }
+      if (body.botId) await this.state.storage.put('botId', body.botId)
+      if (body.record) {
+        await this.state.storage.put('config', body.record)
+        this.mode = body.record.gateway ?? 'private'
+      }
+      await this.state.storage.put('nsec', await sealKey(this.env.BOTSTR_SECRET, body.nsecHex))
+      const sealed: Record<string, string> = {}
+      for (const [k, v] of Object.entries(body.secrets ?? {})) sealed[k] = await sealKey(this.env.BOTSTR_SECRET, v)
+      await this.state.storage.put('secrets', sealed)
+      return json({ ok: true })
+    }
+
+    if (url.pathname === '/start' && request.method === 'POST') {
+      try {
+        const bot = (await request.json()) as BotRecord
+        await this.state.storage.put('botId', bot.id)
+        await this.start(bot)
+        return json({ ok: true })
+      } catch (e) {
+        return err(500, e instanceof Error ? e.message : String(e))
+      }
+    }
+
+    if (url.pathname === '/stop' && request.method === 'POST') {
+      const botId = (await this.state.storage.get<string>('botId')) ?? ''
+      await this.handle?.stop()
+      this.handle = null
+      await this.state.storage.put('config', null)
+      if (botId) await this.setLive({ status: 'stopped' }, botId)
+      else await this.state.storage.put('live', { status: 'stopped' })
+      return json({ ok: true })
+    }
+
+    if (url.pathname === '/restart' && request.method === 'POST') {
+      const bot = (await request.json()) as BotRecord
+      await this.handle?.stop()
+      this.handle = null
+      await this.start(bot)
+      return json({ ok: true })
+    }
+
+    if (url.pathname === '/state') {
+      const live = (await this.state.storage.get<BotLiveState>('live')) ?? { status: 'stopped' }
+      return json({ live, storage: { usedBytes: await this.usedBytes(), quotaMB: await this.quotaMB() } })
+    }
+
+    if (url.pathname === '/logs' || url.pathname === '/events') {
+      const after = Number(url.searchParams.get('after') ?? 0)
+      const stored = (await this.state.storage.get<{ ts: number }[]>(url.pathname.slice(1))) ?? []
+      const pending = url.pathname === '/logs' ? this.logBuf : this.eventBuf
+      const all = stored.concat(pending as never[]).filter((e) => e.ts > after)
+      return json(all)
+    }
+
+    if (url.pathname === '/destroy' && request.method === 'POST') {
+      await this.handle?.stop()
+      this.handle = null
+      await this.state.storage.deleteAll()
+      return json({ ok: true })
+    }
+
+    return err(404, 'unknown DO route')
+  }
+}
