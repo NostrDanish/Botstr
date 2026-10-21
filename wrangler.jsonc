@@ -44,5 +44,7 @@
   // ],
   // Set with: npx wrangler secret put BOTSTR_SECRET
   // (encrypts every bot's private key at rest inside its Durable Object)
+  // Also set: npx wrangler secret put BOTSTR_OWNER_TOKEN
+  // (bearer token for the /api/bots* admin API — admin routes fail closed with 503 while unset)
   "vars": {}
 }

@@ -1,5 +1,5 @@
 # Botstr — self-host the entire platform with one command.
-#   BOTSTR_SECRET=$(openssl rand -hex 32) docker compose up -d
+#   BOTSTR_SECRET=$(openssl rand -hex 32) BOTSTR_OWNER_TOKEN=$(openssl rand -hex 32) docker compose up -d
 # Then open http://localhost:8787
 services:
   botstr:
@@ -9,6 +9,10 @@ services:
     environment:
       # REQUIRED. Any long random string. Back this up: it decrypts every bot key.
       BOTSTR_SECRET: ${BOTSTR_SECRET:?Set BOTSTR_SECRET (e.g. openssl rand -hex 32)}
+      # REQUIRED. Bearer token for the /api/bots* admin API (the admin API fails
+      # closed with 503 while unset). Use it from the dashboard via:
+      #   localStorage.setItem('botstr:ownerToken', '<token>')
+      BOTSTR_OWNER_TOKEN: ${BOTSTR_OWNER_TOKEN:?Set BOTSTR_OWNER_TOKEN (e.g. openssl rand -hex 32)}
     volumes:
       - botstr-data:/data
     restart: unless-stopped
