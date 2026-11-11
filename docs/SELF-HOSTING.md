@@ -8,9 +8,14 @@ Cloudflare is the default, never the requirement. The Botstr promise:
 ```bash
 git clone https://github.com/NostrDanish/Botstr.git
 cd Botstr
-BOTSTR_SECRET=$(openssl rand -hex 32) docker compose up -d
+BOTSTR_SECRET=$(openssl rand -hex 32) BOTSTR_OWNER_TOKEN=$(openssl rand -hex 32) docker compose up -d
 # → http://localhost:8787
 ```
+
+`BOTSTR_OWNER_TOKEN` guards the `/api/bots*` admin API (bot list, lifecycle,
+logs, files, key export) — it fails closed (503) while unset. To drive the
+dashboard against your deployment, store it in your browser:
+`localStorage.setItem('botstr:ownerToken', '<token>')`.
 
 One container carries the whole platform: dashboard, API, bot nodes
 (Durable Objects), database (D1 → local SQLite), object storage (R2 → local
@@ -25,7 +30,7 @@ Proxmox, Unraid, Synology. Kubernetes is not needed and not required.
 ```bash
 npm install
 npx wrangler d1 migrations apply botstr --local
-BOTSTR_SECRET=dev-secret npx wrangler dev --local
+BOTSTR_SECRET=dev-secret BOTSTR_OWNER_TOKEN=dev-token npx wrangler dev --local
 ```
 
 Or the pure-browser dev loop (no local runtime at all):

@@ -14,6 +14,8 @@
  *   DB          D1 database (bot registry + audit)
  *   ASSETS      static dashboard (dist/)
  *   BOTSTR_SECRET  secret env: encrypts bot keys at rest. REQUIRED.
+ *   BOTSTR_OWNER_TOKEN  secret env: bearer token for the /api/bots* admin API.
+ *                       Admin routes fail closed (503) when unset.
  */
 import { runBot, type BotHandle } from './src/lib/core'
 import { getTemplate } from './src/lib/templates'
@@ -75,6 +77,12 @@ interface Env {
   /** optional object storage for per-node files (see docs/BOT-NODE.md) */
   BOT_STORAGE?: R2Bucket
   BOTSTR_SECRET?: string
+  /**
+   * Owner credential for the /api/bots* admin API. REQUIRED in practice:
+   * when unset, every admin route fails closed with 503 (never open).
+   * Set with: npx wrangler secret put BOTSTR_OWNER_TOKEN
+   */
+  BOTSTR_OWNER_TOKEN?: string
 }
 
 const json = (data: unknown, status = 200) =>
@@ -104,6 +112,50 @@ async function openKey(secret: string, packed: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// owner auth — the /api/bots* admin API (bot enumeration, lifecycle, logs,
+// files, and nsec/secret export) is restricted to the deployment owner.
+//
+//   Authorization: Bearer <BOTSTR_OWNER_TOKEN>
+//
+// FAIL CLOSED: when BOTSTR_OWNER_TOKEN is not configured, admin routes return
+// 503 — an internet-reachable deployment must never silently expose bot keys.
+
+/** Constant-time bearer check: compares SHA-256 digests so length/timing don't leak. */
+async function bearerMatches(header: string | null, token: string): Promise<boolean> {
+  const m = (header ?? '').match(/^Bearer\s+(\S+)\s*$/i)
+  if (!m) return false
+  const enc = new TextEncoder()
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(m[1])),
+    crypto.subtle.digest('SHA-256', enc.encode(token)),
+  ])
+  const xa = new Uint8Array(a)
+  const xb = new Uint8Array(b)
+  if (xa.length !== xb.length) return false
+  let diff = 0
+  for (let i = 0; i < xa.length; i++) diff |= xa[i] ^ xb[i]
+  return diff === 0
+}
+
+/** Returns null when the request is authorized, otherwise the error Response to send. */
+async function requireOwner(request: Request, env: Env): Promise<Response | null> {
+  if (!env.BOTSTR_OWNER_TOKEN) {
+    return err(
+      503,
+      'BOTSTR_OWNER_TOKEN is not set — the bot admin API is disabled (fail closed). ' +
+        'Set it with: npx wrangler secret put BOTSTR_OWNER_TOKEN',
+    )
+  }
+  if (!(await bearerMatches(request.headers.get('Authorization'), env.BOTSTR_OWNER_TOKEN))) {
+    return new Response(JSON.stringify({ error: 'owner authorization required: Authorization: Bearer <BOTSTR_OWNER_TOKEN>' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json', 'WWW-Authenticate': 'Bearer realm="botstr-admin"' },
+    })
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
 // API worker
 
 export default {
@@ -117,8 +169,17 @@ export default {
       return err(500, 'BOTSTR_SECRET is not set — refusing to handle bot keys without encryption')
     }
 
-    // GET /api/health
+    // GET /api/health — public, exposes no secrets
     if (url.pathname === '/api/health') return json({ ok: true, runtime: 'cloudflare', ts: Date.now() })
+
+    // ALL /api/bots* routes are owner-only: they enumerate bots, mutate
+    // lifecycle/config, read logs/files, and can export decrypted nsec+secrets.
+    // (Public read-only routes that expose no secrets: /api/health above,
+    //  /nodes/:id discovery doc, /nodes/:id/relay — handled below.)
+    if (url.pathname === '/api/bots' || url.pathname.startsWith('/api/bots/')) {
+      const denied = await requireOwner(request, env)
+      if (denied) return denied
+    }
 
     // GET /api/bots
     if (url.pathname === '/api/bots' && request.method === 'GET') {

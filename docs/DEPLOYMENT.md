@@ -44,11 +44,17 @@ npx wrangler d1 migrations apply botstr --remote
 # 2. the secret that encrypts every bot key at rest (REQUIRED)
 npx wrangler secret put BOTSTR_SECRET     # any long random string
 
-# 3. optional: object storage for bot files (see docs/BOT-NODE.md)
+# 3. the bearer token guarding the /api/bots* admin API (REQUIRED — the admin
+#    API, including nsec export, fails closed with 503 while unset)
+npx wrangler secret put BOTSTR_OWNER_TOKEN   # e.g. openssl rand -hex 32
+#    then authorize admin calls with: Authorization: Bearer <token>
+#    (dashboard: localStorage.setItem('botstr:ownerToken', '<token>'))
+
+# 4. optional: object storage for bot files (see docs/BOT-NODE.md)
 # npx wrangler r2 bucket create botstr-storage
 #    → then uncomment the r2_buckets block in wrangler.jsonc
 
-# 4. build + deploy
+# 5. build + deploy
 npm run build
 npx wrangler deploy
 ```
@@ -61,7 +67,8 @@ from **browser runtime** to **cloud runtime connected**, and the wizard's
 
 This repo is Shakespeare-native (`wrangler.jsonc` + `worker.ts` + `dist/`
 assets is exactly its Cloudflare convention): Settings → Deploy → add
-Cloudflare → Deploy. Create the D1 database and `BOTSTR_SECRET` first.
+Cloudflare → Deploy. Create the D1 database and the `BOTSTR_SECRET` +
+`BOTSTR_OWNER_TOKEN` secrets first.
 
 ### Quotas & honest limits
 
@@ -72,11 +79,14 @@ Cloudflare → Deploy. Create the D1 database and `BOTSTR_SECRET` first.
 | Free plan | Cloudflare | 100k req/day, 5 GB DO storage/account, ~1 GB per node |
 | Paid plan ($5/mo) | Cloudflare | unmetered requests, 10 GB per node, 50k D1 databases |
 
-### Important: put auth in front
+### Auth: owner token in front of the admin API
 
-The `/api` surface is unauthenticated (single-tenant MVP). Before sharing the
-URL, enable **Cloudflare Access** on the hostname (free, email OTP) — or any
-reverse-proxy auth. See [SECURITY.md](SECURITY.md).
+The `/api/bots*` admin API (bot list, lifecycle, logs, files, **nsec/secret
+export**) requires `Authorization: Bearer <BOTSTR_OWNER_TOKEN>` and fails
+closed (503) while the token is unset. Public routes (`/api/health`, the
+per-node discovery doc and relay endpoint) expose no secrets. For defense in
+depth on a shared hostname, you can additionally enable **Cloudflare Access**
+(free, email OTP). See [SECURITY.md](SECURITY.md).
 
 ## 3. Runner executor (Vector / Concord) — design stage
 
